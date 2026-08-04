@@ -159,6 +159,88 @@ describe('将军与合法着过滤', () => {
     expect(result.some((target) => target.endsWith(',5') && !target.startsWith('4,'))).toBe(false)
     expect(result).toContain('4,6')
   })
+
+  it('帅不能走入车、炮、马或过河兵的攻击点', () => {
+    const attackers: Piece[][] = [
+      [piece('rook', 'chariot', 'black', 4, 5)],
+      [
+        piece('cannon', 'cannon', 'black', 4, 5),
+        piece('screen', 'pawn', 'red', 4, 3),
+      ],
+      [piece('horse', 'horse', 'black', 2, 2)],
+      [piece('pawn', 'pawn', 'black', 3, 1)],
+    ]
+
+    for (const extraPieces of attackers) {
+      const king = piece('rk', 'king', 'red', 4, 0)
+      const state = game([
+        king,
+        piece('bk', 'king', 'black', 3, 9),
+        ...extraPieces,
+      ])
+      expect(targets(generateLegalMoves(state, king))).not.toContain('4,1')
+    }
+  })
+
+  it('被将时过滤无法应将的无关着法', () => {
+    const unrelated = piece('unrelated', 'chariot', 'red', 0, 0)
+    const state = game([
+      piece('rk', 'king', 'red', 4, 0),
+      piece('bk', 'king', 'black', 3, 9),
+      piece('checking-rook', 'chariot', 'black', 4, 5),
+      unrelated,
+    ])
+    expect(generateLegalMoves(state, unrelated)).toEqual([])
+  })
+
+  it('炮对将恰好一个炮架时才构成将军', () => {
+    const base = [
+      piece('rk', 'king', 'red', 4, 0),
+      piece('bk', 'king', 'black', 3, 9),
+      piece('cannon', 'cannon', 'black', 4, 5),
+    ]
+    expect(isInCheck(base, 'red')).toBe(false)
+    expect(
+      isInCheck([...base, piece('screen-1', 'pawn', 'red', 4, 3)], 'red'),
+    ).toBe(true)
+    expect(
+      isInCheck(
+        [
+          ...base,
+          piece('screen-1', 'pawn', 'red', 4, 3),
+          piece('screen-2', 'pawn', 'black', 4, 2),
+        ],
+        'red',
+      ),
+    ).toBe(false)
+  })
+
+  it('马腿阻挡会解除对应的将军', () => {
+    const base = [
+      piece('rk', 'king', 'red', 4, 0),
+      piece('bk', 'king', 'black', 3, 9),
+      piece('horse', 'horse', 'black', 2, 1),
+    ]
+    expect(isInCheck(base, 'red')).toBe(true)
+    expect(
+      isInCheck([...base, piece('leg', 'pawn', 'red', 3, 1)], 'red'),
+    ).toBe(false)
+  })
+
+  it('传入过期棋子引用时仍按权威局面坐标生成着法', () => {
+    const state = createInitialState()
+    const current = state.pieces.find(
+      (candidate) =>
+        candidate.side === 'red' &&
+        candidate.kind === 'pawn' &&
+        candidate.file === 0,
+    )!
+    const stale = { ...current, file: 4, rank: 5 }
+    const moves = generateLegalMoves(state, stale)
+    expect(moves).toHaveLength(1)
+    expect(moves[0]?.from).toEqual({ file: 0, rank: 3 })
+    expect(moves[0]?.to).toEqual({ file: 0, rank: 4 })
+  })
 })
 
 describe('执行着法与终局', () => {

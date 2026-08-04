@@ -255,20 +255,24 @@ export function isInCheck(pieces: Piece[], side: Side): boolean {
 
 /** 生成当前行棋方某枚棋子的完整合法着。 */
 export function generateLegalMoves(state: GameState, piece: Piece): Move[] {
+  const currentPiece = state.pieces.find(
+    (candidate) => candidate.id === piece.id,
+  )
   if (
     state.status !== 'playing' ||
-    piece.captured ||
-    piece.side !== state.sideToMove
+    !currentPiece ||
+    currentPiece.captured ||
+    currentPiece.side !== state.sideToMove
   ) {
     return []
   }
 
-  return generatePseudoLegalMoves(state.pieces, piece).filter((move) => {
+  return generatePseudoLegalMoves(state.pieces, currentPiece).filter((move) => {
     const captured = move.capturedId
       ? state.pieces.find((candidate) => candidate.id === move.capturedId)
       : undefined
     if (captured?.kind === 'king') return false
-    return !isInCheck(simulateMove(state.pieces, move), piece.side)
+    return !isInCheck(simulateMove(state.pieces, move), currentPiece.side)
   })
 }
 

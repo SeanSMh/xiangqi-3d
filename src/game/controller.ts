@@ -2,12 +2,9 @@ import { createInitialState, pieceAt, pieceLabel } from '../engine/board'
 import { applyMove, generateLegalMoves, isInsideBoard } from '../engine/moves'
 import type { GameState, Move, Piece } from '../types/xiangqi'
 
-export type InteractionType = 'selected' | 'moved' | 'cleared' | 'ignored'
-
-export interface InteractionResult {
-  type: InteractionType
-  move?: Move
-}
+export type InteractionResult =
+  | { type: 'moved'; move: Move }
+  | { type: 'selected' | 'cleared' | 'ignored' }
 
 /**
  * 棋局交互控制器：只处理局面、选择与合法着，不持有任何 Three.js 对象。

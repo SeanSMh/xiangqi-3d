@@ -31,7 +31,24 @@ Original prompt: 那你设计开发方案，开始开发吧，合理利用资源
 
 ## 下一阶段 TODO
 
-- 增加 `AnimationDirector`：规则先结算，表现层锁输入并播放移动/受击/退场，完成后 `snapTo(nextState)`。
-- 先做车直线移动与通用近战吃子，再做炮弹道和马弧线，形成三类演出垂直切片。
-- 把共享棋种剪影或后续 GLB 角色接到底座上；红黑继续共用造型，仅切换材质与阵营色。
-- 增加棋谱回放、悔棋和 AI；长将、长捉、循环局面作为独立竞赛规则阶段处理。
+- [x] 增加 `AnimationDirector`：规则先结算，表现层锁输入并播放移动/受击/退场，完成后 `snapTo(nextState)`。
+- [x] 完成车直线移动、阵营拖尾与通用吃子退场垂直切片。
+- [ ] 实现炮弹道和马弧线，补齐三类演出差异。
+- [ ] 把共享棋种剪影或后续 GLB 角色接到底座上；红黑继续共用造型，仅切换材质与阵营色。
+- [ ] 增加棋谱回放、悔棋和 AI；长将、长捉、循环局面作为独立竞赛规则阶段处理。
+
+## 2026-08-04 第二阶段：走子与吃子演出
+
+- 第一阶段已提交：`bd18e37 feat: 完成中国象棋本地双人可玩基线`。
+- 新增 `src/animation/animationDirector.ts`，使用确定性 `travel → impact → victim-exit → settle` 状态机；权威局面先提交，动画期间只锁表现层输入。
+- `BoardScene` 新增棋子浮点姿态、车阵营色拖尾、白青冲击核、橙金爆炸、受害者缩小抬升旋转，以及结束后的权威局面吸附。
+- `window.advanceTime(ms)` 现在真实推进动画；`render_game_to_text()` 增加 `inputLocked`、`manualClock` 和完整动画快照。
+- 重开可在任意动画阶段执行 `cancelAndSnap`；被吃 Mesh 删除时释放 geometry/material，缓存 Texture 保留复用。
+- 修复过期 `Piece` 引用可能按错误坐标生成着法的问题，并补齐帅受攻击、被将应对、炮架将军和马腿将军测试。
+
+### 第二阶段验收
+
+- `npm test`：3 个测试文件、27 个测试全部通过。
+- Playwright 半程：红车 `(0,0) → (0,1)` 在 `elapsedMs=183.333` 时视觉位置 `rank=0.568`，`inputLocked=true`；动画期间点击黑炮未产生新着法。
+- Playwright 吃子：5 ply 合法序列触发红车吃黑炮，已截取 `impact` 与 `victim-exit`；最终 `captured=["red:马","black:炮"]`、动画回到 `idle`。
+- Playwright 动画中重开：恢复 `ply=0`、32 子、`inputLocked=false`；全部场景无控制台错误。

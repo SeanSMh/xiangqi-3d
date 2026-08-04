@@ -1,4 +1,8 @@
 import * as THREE from 'three'
+import type {
+  AnimationSurface,
+  PiecePose,
+} from '../animation/animationDirector'
 import type { BoardCoord, GameState, Move } from '../types/xiangqi'
 import { pieceLabel } from '../engine/board'
 import { applyUnifiedLighting, FACTION_COLORS } from './lighting'
@@ -17,7 +21,7 @@ export function fileRankToWorld(file: number, rank: number): THREE.Vector3 {
   return new THREE.Vector3(x, 0, z)
 }
 
-export class BoardScene {
+export class BoardScene implements AnimationSurface {
   readonly scene = new THREE.Scene()
   readonly camera: THREE.PerspectiveCamera
   readonly renderer: THREE.WebGLRenderer
@@ -29,6 +33,12 @@ export class BoardScene {
   private pointer = new THREE.Vector2()
   private raycaster = new THREE.Raycaster()
   private boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+  private moveTrail: THREE.Mesh<
+    THREE.CylinderGeometry,
+    THREE.MeshBasicMaterial
+  > | null = null
+  private whiteImpact: THREE.Sprite | null = null
+  private orangeImpact: THREE.Sprite | null = null
 
   constructor(container: HTMLElement) {
     const w = container.clientWidth
@@ -54,6 +64,7 @@ export class BoardScene {
     this.buildBoard()
     this.scene.add(this.boardRoot)
     this.boardRoot.add(this.markerRoot)
+    this.ensureImpactSprites()
 
     window.addEventListener('resize', () => {
       const cw = container.clientWidth
@@ -138,13 +149,31 @@ export class BoardScene {
       }
       const pos = fileRankToWorld(p.file, p.rank)
       g.position.set(pos.x, 0.05, pos.z)
+      g.rotation.set(0, 0, 0)
+      g.scale.setScalar(1)
+      g.visible = true
     }
     for (const [id, mesh] of this.pieceMeshes) {
       if (!alive.has(id)) {
         this.boardRoot.remove(mesh)
+        disposeObject(mesh)
         this.pieceMeshes.delete(id)
       }
     }
+  }
+
+  snapTo(state: GameState): void {
+    this.syncPieces(state)
+  }
+
+  setPiecePose(pieceId: string, pose: PiecePose): boolean {
+    const mesh = this.pieceMeshes.get(pieceId)
+    if (!mesh) return false
+    const position = fileRankToWorld(pose.file, pose.rank)
+    mesh.position.set(position.x, 0.05 + pose.lift, position.z)
+    mesh.scale.setScalar(pose.scale)
+    mesh.rotation.y = pose.rotationY
+    return true
   }
 
   private createPieceMesh(side: 'red' | 'black', label: string): THREE.Group {
@@ -280,6 +309,145 @@ export class BoardScene {
     return texture
   }
 
+  setMoveTrail(
+    from: BoardCoord,
+    to: BoardCoord,
+    progress: number,
+    opacity: number,
+    side: 'red' | 'black',
+  ): void {
+    if (!this.moveTrail) {
+      this.moveTrail = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.055, 0.14, 1, 10, 1, true),
+        new THREE.MeshBasicMaterial({
+          color: FACTION_COLORS[side].ring,
+          transparent: true,
+          opacity: 0,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: false,
+          toneMapped: false,
+        }),
+      )
+      this.moveTrail.renderOrder = 6
+      this.boardRoot.add(this.moveTrail)
+    }
+
+    const clampedProgress = THREE.MathUtils.clamp(progress, 0, 1)
+    const start = fileRankToWorld(from.file, from.rank)
+    const destination = fileRankToWorld(to.file, to.rank)
+    const end = start.clone().lerp(destination, clampedProgress)
+    start.y = 0.2
+    end.y = 0.2
+    const direction = end.clone().sub(start)
+    const length = direction.length()
+
+    this.moveTrail.visible = opacity > 0.001 && length > 0.001
+    if (!this.moveTrail.visible) return
+    this.moveTrail.position.copy(start).add(end).multiplyScalar(0.5)
+    this.moveTrail.scale.set(1, length, 1)
+    this.moveTrail.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      direction.normalize(),
+    )
+    this.moveTrail.material.color.setHex(FACTION_COLORS[side].ring)
+    this.moveTrail.material.opacity = opacity
+  }
+
+  setCaptureImpact(
+    square: BoardCoord,
+    whiteProgress: number,
+    orangeProgress: number,
+  ): void {
+    this.ensureImpactSprites()
+    const position = fileRankToWorld(square.file, square.rank)
+    position.y = 0.62
+
+    if (this.whiteImpact) {
+      this.whiteImpact.position.copy(position)
+      const peak = 70 / 170
+      const p = THREE.MathUtils.clamp(whiteProgress, 0, 1)
+      if (p <= peak) {
+        const t = p / peak
+        setSpriteVisual(
+          this.whiteImpact,
+          p > 0,
+          t,
+          THREE.MathUtils.lerp(0.28, 0.9, t),
+        )
+      } else {
+        const t = (p - peak) / (1 - peak)
+        setSpriteVisual(
+          this.whiteImpact,
+          p < 1,
+          1 - t,
+          THREE.MathUtils.lerp(0.9, 1.15, t),
+        )
+      }
+    }
+
+    if (this.orangeImpact) {
+      this.orangeImpact.position.copy(position)
+      const peak = 180 / 430
+      const p = THREE.MathUtils.clamp(orangeProgress, 0, 1)
+      if (p <= peak) {
+        const t = p / peak
+        setSpriteVisual(
+          this.orangeImpact,
+          p > 0,
+          THREE.MathUtils.lerp(0.9, 0.35, t),
+          THREE.MathUtils.lerp(0.45, 1.2, t),
+        )
+      } else {
+        const t = (p - peak) / (1 - peak)
+        setSpriteVisual(
+          this.orangeImpact,
+          p < 1,
+          0.35 * (1 - t),
+          THREE.MathUtils.lerp(1.2, 1.42, t),
+        )
+      }
+    }
+  }
+
+  clearTransientEffects(): void {
+    if (this.moveTrail) this.moveTrail.visible = false
+    if (this.whiteImpact) this.whiteImpact.visible = false
+    if (this.orangeImpact) this.orangeImpact.visible = false
+  }
+
+  private ensureImpactSprites(): void {
+    if (!this.whiteImpact) {
+      this.whiteImpact = this.createImpactSprite(
+        '/assets/vfx/vfx_blast_white_cyan_alpha.png',
+      )
+    }
+    if (!this.orangeImpact) {
+      this.orangeImpact = this.createImpactSprite(
+        '/assets/vfx/vfx_blast_orange_gold_alpha.png',
+      )
+    }
+  }
+
+  private createImpactSprite(url: string): THREE.Sprite {
+    const sprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.loadTexture(url),
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: true,
+        toneMapped: false,
+      }),
+    )
+    sprite.visible = false
+    sprite.renderOrder = 10
+    this.boardRoot.add(sprite)
+    return sprite
+  }
+
   render() {
     this.renderer.render(this.scene, this.camera)
   }
@@ -308,4 +476,26 @@ function addBoardLine(
   const from = fileRankToWorld(file1, rank1)
   const to = fileRankToWorld(file2, rank2)
   addLine(points, from.x, from.z, to.x, to.z)
+}
+
+function setSpriteVisual(
+  sprite: THREE.Sprite,
+  visible: boolean,
+  opacity: number,
+  scale: number,
+): void {
+  sprite.visible = visible
+  sprite.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1)
+  sprite.scale.setScalar(scale)
+}
+
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return
+    child.geometry.dispose()
+    const materials = Array.isArray(child.material)
+      ? child.material
+      : [child.material]
+    for (const material of materials) material.dispose()
+  })
 }

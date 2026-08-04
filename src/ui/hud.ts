@@ -121,6 +121,7 @@ export class Hud {
     state: GameState,
     selected: Piece | undefined,
     legalCount: number,
+    inputLocked = false,
   ): void {
     const sideLabel = state.sideToMove === 'red' ? '红方' : '黑方'
     const sideColor = state.sideToMove === 'red' ? '#ff665c' : '#80bfff'
@@ -136,7 +137,11 @@ export class Hud {
       <div style="opacity:.5;font-size:10px;margin-top:5px">已吃 ${capturedCount(state)} 子</div>
     `
 
-    if (state.status === 'playing') {
+    this.gameStatusEl.style.borderColor = 'rgba(212,175,55,.35)'
+    if (inputLocked) {
+      this.gameStatusEl.textContent = '战斗演出中 · 输入已锁定'
+      this.gameStatusEl.style.color = '#ffcc80'
+    } else if (state.status === 'playing') {
       this.gameStatusEl.textContent = state.inCheck
         ? `${sideLabel}正在被将军，请应将`
         : '本地双人对局'
@@ -149,7 +154,9 @@ export class Hud {
       this.gameStatusEl.style.borderColor = 'rgba(255,188,45,.8)'
     }
 
-    if (state.status !== 'playing') {
+    if (inputLocked) {
+      this.selectionEl.textContent = '正在执行走子演出…'
+    } else if (state.status !== 'playing') {
       this.selectionEl.textContent = '对局结束，可点击“重开”再来一局'
     } else if (selected) {
       const faction = selected.side === 'red' ? '红' : '黑'

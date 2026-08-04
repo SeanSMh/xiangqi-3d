@@ -19,6 +19,7 @@ xiangqi-3d/
 ├── public/                   # 运行时静态资源（构建会拷贝）
 ├── src/                      # 源码
 │   ├── main.ts               # 启动
+│   ├── animation/            # 确定性走子 / 冲击 / 退场状态机
 │   ├── engine/               # 中国象棋规则引擎（纯逻辑）
 │   ├── scene/                # Three.js 棋盘 / 棋子 / 相机
 │   ├── ui/                   # HUD：行棋方、将军、战果
@@ -74,7 +75,7 @@ open resources/reference/index.html
 
 ## 阶段
 
-1. **Phase 0**：规则引擎可测  
-2. **Phase 1**：简 3D 可玩  
-3. **Phase 2**：对齐参考包 HUD / VFX  
-4. **Phase 3**：角色模型、AI、分享  
+1. **Phase 0 ✅**：完整基础规则引擎与测试
+2. **Phase 1 ✅**：本地双人 3D 可玩版
+3. **Phase 2 进行中**：车走子拖尾、吃子冲击与退场已完成；后续接炮、马演出
+4. **Phase 3**：角色模型、AI、分享
