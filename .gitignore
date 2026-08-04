@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+*.local
+.env
+.env.*
+!.env.example
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log
+npm-debug.log*
+
+# 原视频和逐帧分析产物仅保留在本地，不进入代码仓库。
+resources/reference/00_source_video.mp4
+resources/reference/01_all_frames*/
+resources/reference/02_ui_crops/
+resources/reference/03_vfx_battle/
+resources/reference/04_pieces_selection/
+resources/reference/05_board_scene/
+resources/reference/06_audio/

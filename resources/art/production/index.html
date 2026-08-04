@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>Production v3 · 收口完成</title>
+  <style>
+    body { margin: 0; padding: 24px; background: #111; color: #eee;
+      font-family: -apple-system, "PingFang SC", sans-serif; }
+    h1 { color: #f5d76e; } h2 { color: #ccc; border-bottom: 1px solid #333; padding-bottom: 8px; margin-top: 28px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .card { background: #1a1a22; border: 1px solid #2e7d32; border-radius: 10px; overflow: hidden; }
+    .card img { width: 100%; display: block; background: #0d0d14; }
+    .card.light img { background: #eee; }
+    .card .n { padding: 8px; text-align: center; font-size: 12px; }
+    .wide img { width: 100%; display: block; }
+    .note { background: #1e2430; border-left: 3px solid #f5d76e; padding: 12px 16px; margin: 16px 0; }
+    a { color: #7ec8ff; } table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border: 1px solid #333; padding: 8px; } th { background: #1a1a22; color: #f5d76e; }
+    .ok { color: #81c784; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Production v3 · 剩余项收口</h1>
+  <p>
+    <a href="LOCKED_FEATURES.md">锁定特征</a> ·
+    <a href="DESIGN_BRIEF.md">简报</a> ·
+    <a href="ENGINE_LIGHTING.md">引擎灯光</a> ·
+    <a href="../ASSET_INVENTORY.md">清单</a>
+  </p>
+  <div class="note">
+    已完成：兵/卒短标枪、红黑同步、剪影同源、七棋种三视图、引擎统一 rim、0.85 格引导。
+  </div>
+
+  <h2>验收</h2>
+  <table>
+    <tr><th>项</th><th>状态</th></tr>
+    <tr><td>兵/卒短矛</td><td class="ok">通过（胸高短标枪）</td></tr>
+    <tr><td>黑方 recolor</td><td class="ok">通过（玄青黑+银+冷蓝）</td></tr>
+    <tr><td>同源剪影</td><td class="ok">通过</td></tr>
+    <tr><td>Turnaround ×7</td><td class="ok">通过</td></tr>
+    <tr><td>引擎统一灯光</td><td class="ok">src/scene/lighting.ts</td></tr>
+    <tr><td>0.85 占位</td><td class="ok">引导图 + 场景绿环</td></tr>
+  </table>
+
+  <h2>红黑对照</h2>
+  <div class="card wide"><img src="redesign/pair_red_black_v3.png" /></div>
+
+  <h2>剪影对照</h2>
+  <div class="card wide"><img src="silhouettes/pair_character_silhouette_v3.png" /></div>
+
+  <h2>三视图</h2>
+  <div class="grid">
+    <div class="card"><img src="turnarounds/king_turnaround_v3.jpg" /><div class="n">帅</div></div>
+    <div class="card"><img src="turnarounds/advisor_turnaround_v3.jpg" /><div class="n">仕</div></div>
+    <div class="card"><img src="turnarounds/elephant_turnaround_v3.jpg" /><div class="n">相</div></div>
+    <div class="card"><img src="turnarounds/horse_turnaround_v3.jpg" /><div class="n">马</div></div>
+    <div class="card"><img src="turnarounds/chariot_turnaround_v3.jpg" /><div class="n">车</div></div>
+    <div class="card"><img src="turnarounds/cannon_turnaround_v3.jpg" /><div class="n">炮</div></div>
+    <div class="card"><img src="turnarounds/pawn_turnaround_v3.jpg" /><div class="n">兵</div></div>
+  </div>
+
+  <h2>占位 0.85</h2>
+  <div class="card wide"><img src="occupancy_0.85_guide.png" /></div>
+
+  <h2>兵/卒短标枪</h2>
+  <div class="grid">
+    <div class="card"><img src="redesign/red_pawn_v3.jpg" /><div class="n">红兵</div></div>
+    <div class="card"><img src="redesign/black_pawn_v3.jpg" /><div class="n">黑卒</div></div>
+    <div class="card light"><img src="silhouettes/sil_pawn_alpha.png" /><div class="n">剪影</div></div>
+  </div>
+</body>
+</html>

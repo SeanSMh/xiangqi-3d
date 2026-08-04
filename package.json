@@ -1,0 +1,28 @@
+{
+  "name": "xiangqi-3d",
+  "version": "0.1.0",
+  "private": true,
+  "description": "中国象棋 3D 对战 — 复刻 3D Chess Battle 风格（走子动画 + 吃子特效）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "open:reference": "open resources/reference/index.html"
+  },
+  "dependencies": {
+    "three": "^0.172.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.172.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
