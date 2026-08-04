@@ -113,6 +113,7 @@ window.render_game_to_text = () => {
       fullscreen: Boolean(document.fullscreenElement),
       inputLocked: animations.isBusy,
       animation: animations.getSnapshot(),
+      presentation: scene.getPresentationSnapshot(state),
       manualClock,
       ply: state.history.length,
       selected: selected
@@ -188,5 +189,5 @@ function loop(now: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 动画切片已就绪：车带直线拖尾，炮有独立弹道，马沿日字路径跃迁。',
+  '[xiangqi-3d] 角色演出已就绪：production v3 共用剪影由阵营 Shader 着色。',
 )

@@ -78,4 +78,5 @@ open resources/reference/index.html
 1. **Phase 0 ✅**：完整基础规则引擎与测试
 2. **Phase 1 ✅**：本地双人 3D 可玩版
 3. **Phase 2 ✅**：车直线拖尾、炮弹道、马日字跃迁，以及通用吃子冲击与退场
-4. **Phase 3**：接入定稿角色剪影 / 模型，再开发棋谱、悔棋与 AI
+4. **Phase 3 ✅**：接入 production v3 七棋种剪影，红黑共用造型并由阵营材质着色
+5. **Phase 4**：将剪影逐步升级为 GLB 角色，再开发棋谱、悔棋与 AI

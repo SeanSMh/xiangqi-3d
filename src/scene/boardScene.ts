@@ -3,9 +3,24 @@ import type {
   AnimationSurface,
   PiecePose,
 } from '../animation/animationDirector'
-import type { BoardCoord, GameState, Move } from '../types/xiangqi'
+import type {
+  BoardCoord,
+  GameState,
+  Move,
+  PieceKind,
+  Side,
+} from '../types/xiangqi'
 import { pieceLabel } from '../engine/board'
 import { applyUnifiedLighting, FACTION_COLORS } from './lighting'
+import {
+  getSilhouetteLayout,
+  PIECE_KINDS,
+  ROLE_BASE_TOP,
+  ROLE_RIM_SCALE,
+  ROLE_VISUAL_MODE,
+  SILHOUETTE_COLORS,
+  SILHOUETTE_SPECS,
+} from './pieceVisuals'
 
 /** 格距：交点间距 */
 export const CELL = 1.0
@@ -30,6 +45,11 @@ export class BoardScene implements AnimationSurface {
   private markerRoot = new THREE.Group()
   private textureLoader = new THREE.TextureLoader()
   private textureCache = new Map<string, THREE.Texture>()
+  private textureStatus = new Map<
+    string,
+    'loading' | 'ready' | 'failed'
+  >()
+  private billboardWorldPosition = new THREE.Vector3()
   private pointer = new THREE.Vector2()
   private raycaster = new THREE.Raycaster()
   private boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
@@ -153,10 +173,21 @@ export class BoardScene implements AnimationSurface {
       if (p.captured) continue
       alive.add(p.id)
       let g = this.pieceMeshes.get(p.id)
+      if (
+        g &&
+        (g.userData.pieceKind !== p.kind || g.userData.side !== p.side)
+      ) {
+        this.boardRoot.remove(g)
+        disposeObject(g)
+        this.pieceMeshes.delete(p.id)
+        g = undefined
+      }
       if (!g) {
-        g = this.createPieceMesh(p.side, pieceLabel(p.kind, p.side))
+        g = this.createPieceMesh(p.kind, p.side, pieceLabel(p.kind, p.side))
         g.name = `piece-${p.id}`
         g.userData.pieceId = p.id
+        g.userData.pieceKind = p.kind
+        g.userData.side = p.side
         this.pieceMeshes.set(p.id, g)
         this.boardRoot.add(g)
       }
@@ -189,7 +220,11 @@ export class BoardScene implements AnimationSurface {
     return true
   }
 
-  private createPieceMesh(side: 'red' | 'black', label: string): THREE.Group {
+  private createPieceMesh(
+    kind: PieceKind,
+    side: Side,
+    label: string,
+  ): THREE.Group {
     const g = new THREE.Group()
     const faction = FACTION_COLORS[side]
     const radius = (OCCUPANCY_DIAMETER / 2) * 0.9
@@ -221,7 +256,59 @@ export class BoardScene implements AnimationSurface {
     face.position.y = 0.235
     g.add(face)
 
+    g.add(this.createSilhouetteCard(kind, side))
+
     return g
+  }
+
+  private createSilhouetteCard(kind: PieceKind, side: Side): THREE.Group {
+    const spec = SILHOUETTE_SPECS[kind]
+    const layout = getSilhouetteLayout(kind)
+    const texture = this.loadTexture(spec.assetUrl)
+    const card = new THREE.Group()
+    card.name = 'role-billboard'
+    card.position.y = ROLE_BASE_TOP
+    card.userData.assetUrl = spec.assetUrl
+    card.userData.kind = kind
+    card.userData.side = side
+
+    const rimGeometry = new THREE.PlaneGeometry(
+      layout.planeWidth,
+      layout.planeHeight,
+    )
+    rimGeometry.translate(
+      layout.geometryOffsetX,
+      layout.geometryOffsetY,
+      0,
+    )
+    const rim = new THREE.Mesh(
+      rimGeometry,
+      createSilhouetteMaterial(texture, SILHOUETTE_COLORS[side].rim),
+    )
+    rim.name = 'role-rim'
+    rim.scale.setScalar(ROLE_RIM_SCALE)
+    rim.renderOrder = 4
+    card.add(rim)
+
+    const bodyGeometry = new THREE.PlaneGeometry(
+      layout.planeWidth,
+      layout.planeHeight,
+    )
+    bodyGeometry.translate(
+      layout.geometryOffsetX,
+      layout.geometryOffsetY,
+      0,
+    )
+    const body = new THREE.Mesh(
+      bodyGeometry,
+      createSilhouetteMaterial(texture, SILHOUETTE_COLORS[side].body),
+    )
+    body.name = 'role-body'
+    body.position.z = 0.008
+    body.renderOrder = 5
+    card.add(body)
+
+    return card
   }
 
   /** 将浏览器坐标投射为棋盘交点。 */
@@ -312,14 +399,60 @@ export class BoardScene implements AnimationSurface {
   private loadTexture(url: string): THREE.Texture {
     const cached = this.textureCache.get(url)
     if (cached) return cached
-    const texture = this.textureLoader.load(url)
-    texture.colorSpace = THREE.SRGBColorSpace
+    this.textureStatus.set(url, 'loading')
+    const texture = this.textureLoader.load(
+      url,
+      () => this.textureStatus.set(url, 'ready'),
+      undefined,
+      (error) => {
+        this.textureStatus.set(url, 'failed')
+        console.error(`[xiangqi-3d] 纹理加载失败: ${url}`, error)
+      },
+    )
+    texture.colorSpace = url.includes('/silhouettes/')
+      ? THREE.NoColorSpace
+      : THREE.SRGBColorSpace
     texture.anisotropy = Math.min(
       8,
       this.renderer.capabilities.getMaxAnisotropy(),
     )
     this.textureCache.set(url, texture)
     return texture
+  }
+
+  getPresentationSnapshot(state: GameState) {
+    const silhouetteAssets = PIECE_KINDS.map(
+      (kind) => SILHOUETTE_SPECS[kind].assetUrl,
+    )
+    const renderedKinds = new Set<PieceKind>()
+    let redInstances = 0
+    let blackInstances = 0
+    for (const mesh of this.pieceMeshes.values()) {
+      const kind = mesh.userData.pieceKind as PieceKind | undefined
+      if (kind) renderedKinds.add(kind)
+      if (mesh.userData.side === 'red') redInstances += 1
+      if (mesh.userData.side === 'black') blackInstances += 1
+    }
+
+    return {
+      renderer: ROLE_VISUAL_MODE,
+      assetRevision: 'locked-v3',
+      billboard: 'cylindrical-y',
+      sharedShapeAcrossFactions: true,
+      logicalAlive: state.pieces.filter((piece) => !piece.captured).length,
+      renderedInstances: this.pieceMeshes.size,
+      renderedBySide: { red: redInstances, black: blackInstances },
+      renderedKinds: PIECE_KINDS.filter((kind) => renderedKinds.has(kind)),
+      readyAssets: silhouetteAssets.filter(
+        (url) => this.textureStatus.get(url) === 'ready',
+      ).length,
+      loadingAssets: silhouetteAssets.filter(
+        (url) => this.textureStatus.get(url) === 'loading',
+      ),
+      failedAssets: silhouetteAssets.filter(
+        (url) => this.textureStatus.get(url) === 'failed',
+      ),
+    }
   }
 
   setMoveTrail(
@@ -566,7 +699,21 @@ export class BoardScene implements AnimationSurface {
     return sprite
   }
 
+  private orientCharacterBillboards(): void {
+    for (const root of this.pieceMeshes.values()) {
+      const card = root.getObjectByName('role-billboard')
+      if (!card) continue
+      root.getWorldPosition(this.billboardWorldPosition)
+      const worldYaw = Math.atan2(
+        this.camera.position.x - this.billboardWorldPosition.x,
+        this.camera.position.z - this.billboardWorldPosition.z,
+      )
+      card.rotation.y = worldYaw - root.rotation.y
+    }
+  }
+
   render() {
+    this.orientCharacterBillboards()
     this.renderer.render(this.scene, this.camera)
   }
 }
@@ -605,6 +752,38 @@ function setSpriteVisual(
   sprite.visible = visible
   sprite.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1)
   sprite.scale.setScalar(scale)
+}
+
+function createSilhouetteMaterial(
+  texture: THREE.Texture,
+  color: number,
+): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    color,
+    transparent: true,
+    opacity: 1,
+    alphaTest: 0.06,
+    depthTest: true,
+    depthWrite: true,
+    side: THREE.FrontSide,
+    toneMapped: false,
+  })
+  material.name = 'production-v3-alpha-silhouette'
+  material.fog = false
+  material.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `
+#ifdef USE_MAP
+  vec4 sampledDiffuseColor = texture2D(map, vMapUv);
+  diffuseColor.a *= sampledDiffuseColor.a;
+#endif
+      `,
+    )
+  }
+  material.customProgramCacheKey = () => 'production-v3-alpha-silhouette-v1'
+  return material
 }
 
 function disposeObject(root: THREE.Object3D): void {
