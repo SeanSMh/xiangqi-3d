@@ -188,5 +188,5 @@ function loop(now: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 动画切片已就绪：走子期间锁输入；车带直线拖尾，吃子播放冲击与退场。',
+  '[xiangqi-3d] 动画切片已就绪：车带直线拖尾，炮有独立弹道，马沿日字路径跃迁。',
 )

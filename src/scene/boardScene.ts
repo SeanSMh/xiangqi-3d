@@ -37,6 +37,19 @@ export class BoardScene implements AnimationSurface {
     THREE.CylinderGeometry,
     THREE.MeshBasicMaterial
   > | null = null
+  private cannonProjectile: THREE.Group | null = null
+  private cannonProjectileCore: THREE.Mesh<
+    THREE.SphereGeometry,
+    THREE.MeshBasicMaterial
+  > | null = null
+  private cannonProjectileShell: THREE.Mesh<
+    THREE.SphereGeometry,
+    THREE.MeshBasicMaterial
+  > | null = null
+  private cannonProjectileTrail: THREE.Mesh<
+    THREE.CylinderGeometry,
+    THREE.MeshBasicMaterial
+  > | null = null
   private whiteImpact: THREE.Sprite | null = null
   private orangeImpact: THREE.Sprite | null = null
 
@@ -354,6 +367,54 @@ export class BoardScene implements AnimationSurface {
     this.moveTrail.material.opacity = opacity
   }
 
+  setCannonProjectile(
+    pose: PiecePose,
+    trailFrom: PiecePose,
+    opacity: number,
+  ): void {
+    const alpha = THREE.MathUtils.clamp(opacity, 0, 1)
+    if (!this.cannonProjectile && alpha <= 0.001) return
+    this.ensureCannonProjectile()
+    if (
+      !this.cannonProjectile ||
+      !this.cannonProjectileCore ||
+      !this.cannonProjectileShell ||
+      !this.cannonProjectileTrail
+    ) {
+      return
+    }
+
+    const position = fileRankToWorld(pose.file, pose.rank)
+    position.y = 0.12 + pose.lift
+    this.cannonProjectile.position.copy(position)
+    this.cannonProjectile.rotation.y = pose.rotationY
+    this.cannonProjectile.scale.setScalar(pose.scale)
+    this.cannonProjectile.visible = alpha > 0.001
+    this.cannonProjectileCore.material.opacity = alpha
+    this.cannonProjectileShell.material.opacity = alpha * 0.35
+
+    const trailOrigin = fileRankToWorld(trailFrom.file, trailFrom.rank)
+    trailOrigin.y = 0.12 + trailFrom.lift
+    const direction = position.clone().sub(trailOrigin)
+    const travelled = direction.length()
+    this.cannonProjectileTrail.visible = alpha > 0.001 && travelled > 0.02
+    if (!this.cannonProjectileTrail.visible) return
+
+    const trailLength = Math.min(0.42, travelled)
+    const unitDirection = direction.normalize()
+    const tail = position.clone().addScaledVector(unitDirection, -trailLength)
+    this.cannonProjectileTrail.position
+      .copy(tail)
+      .add(position)
+      .multiplyScalar(0.5)
+    this.cannonProjectileTrail.scale.set(1, trailLength, 1)
+    this.cannonProjectileTrail.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      unitDirection,
+    )
+    this.cannonProjectileTrail.material.opacity = alpha * 0.55
+  }
+
   setCaptureImpact(
     square: BoardCoord,
     whiteProgress: number,
@@ -412,6 +473,10 @@ export class BoardScene implements AnimationSurface {
 
   clearTransientEffects(): void {
     if (this.moveTrail) this.moveTrail.visible = false
+    if (this.cannonProjectile) this.cannonProjectile.visible = false
+    if (this.cannonProjectileTrail) {
+      this.cannonProjectileTrail.visible = false
+    }
     if (this.whiteImpact) this.whiteImpact.visible = false
     if (this.orangeImpact) this.orangeImpact.visible = false
   }
@@ -427,6 +492,59 @@ export class BoardScene implements AnimationSurface {
         '/assets/vfx/vfx_blast_orange_gold_alpha.png',
       )
     }
+  }
+
+  private ensureCannonProjectile(): void {
+    if (this.cannonProjectile) return
+
+    const projectile = new THREE.Group()
+    projectile.name = 'cannon-projectile'
+    projectile.renderOrder = 9
+
+    this.cannonProjectileCore = new THREE.Mesh(
+      new THREE.SphereGeometry(0.065, 16, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0xfff1c2,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    projectile.add(this.cannonProjectileCore)
+
+    this.cannonProjectileShell = new THREE.Mesh(
+      new THREE.SphereGeometry(0.105, 16, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0xff9d28,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    projectile.add(this.cannonProjectileShell)
+    projectile.visible = false
+    this.boardRoot.add(projectile)
+    this.cannonProjectile = projectile
+
+    this.cannonProjectileTrail = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.015, 1, 8, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffb347,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: true,
+        toneMapped: false,
+      }),
+    )
+    this.cannonProjectileTrail.name = 'cannon-projectile-trail'
+    this.cannonProjectileTrail.visible = false
+    this.cannonProjectileTrail.renderOrder = 8
+    this.boardRoot.add(this.cannonProjectileTrail)
   }
 
   private createImpactSprite(url: string): THREE.Sprite {

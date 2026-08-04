@@ -28,12 +28,18 @@ export interface AnimationSurface {
     whiteProgress: number,
     orangeProgress: number,
   ): void
+  setCannonProjectile(
+    pose: PiecePose,
+    trailFrom: PiecePose,
+    opacity: number,
+  ): void
   clearTransientEffects(): void
   snapTo(state: GameState): void
 }
 
 export type AnimationPhase =
   | 'travel'
+  | 'projectile'
   | 'impact'
   | 'victim-exit'
   | 'settle'
@@ -48,6 +54,7 @@ export interface ActiveAnimationSnapshot {
   active: true
   inputLocked: true
   kind: 'move' | 'capture'
+  style: 'standard' | 'chariot' | 'horse' | 'cannon'
   phase: AnimationPhase
   elapsedMs: number
   durationMs: number
@@ -61,6 +68,11 @@ export interface ActiveAnimationSnapshot {
     capturedId: string | null
   }
   attackerVisual: PiecePose
+  projectile: null | {
+    kind: 'cannonball'
+    progress: number
+    pose: PiecePose
+  }
   victim: null | {
     id: string
     state: 'waiting' | 'hit' | 'exiting'
@@ -81,6 +93,8 @@ interface ActiveAnimation {
   committedState: GameState
   pieceKind: PieceKind
   side: Side
+  style: ActiveAnimationSnapshot['style']
+  cannonCapture: boolean
   victimId: string | null
   victimSquare: BoardCoord | null
   travelMs: number
@@ -91,6 +105,8 @@ interface ActiveAnimation {
   elapsedMs: number
   phase: AnimationPhase
   attackerVisual: PiecePose
+  projectileVisual: PiecePose | null
+  projectileProgress: number
   victimVisual: PiecePose | null
   victimState: 'waiting' | 'hit' | 'exiting' | null
   vfxActive: boolean
@@ -125,7 +141,21 @@ export class AnimationDirector {
       move.to.file - move.from.file,
       move.to.rank - move.from.rank,
     )
-    const travelMs = clamp(distance * 120, 350, 900)
+    const cannonCapture = movingPiece.kind === 'cannon' && Boolean(victim)
+    const style: ActiveAnimationSnapshot['style'] =
+      movingPiece.kind === 'horse'
+        ? 'horse'
+        : cannonCapture
+          ? 'cannon'
+          : movingPiece.kind === 'chariot'
+            ? 'chariot'
+            : 'standard'
+    const travelMs =
+      style === 'horse'
+        ? 480
+        : cannonCapture
+          ? clamp(220 + distance * 45, 300, 560)
+          : clamp(distance * 120, 350, 900)
     const impactMs = victim ? 170 : 0
     const victimExitMs = victim ? 260 : 0
     const settleMs = 90
@@ -136,6 +166,8 @@ export class AnimationDirector {
       committedState,
       pieceKind: movingPiece.kind,
       side: movingPiece.side,
+      style,
+      cannonCapture,
       victimId: victim?.id ?? null,
       victimSquare: victim
         ? { file: victim.file, rank: victim.rank }
@@ -146,8 +178,10 @@ export class AnimationDirector {
       settleMs,
       totalMs: travelMs + impactMs + victimExitMs + settleMs,
       elapsedMs: 0,
-      phase: 'travel',
+      phase: cannonCapture ? 'projectile' : 'travel',
       attackerVisual,
+      projectileVisual: null,
+      projectileProgress: 0,
       victimVisual: victim ? poseAt(victim) : null,
       victimState: victim ? 'waiting' : null,
       vfxActive: false,
@@ -189,6 +223,7 @@ export class AnimationDirector {
       active: true,
       inputLocked: true,
       kind: active.victimId ? 'capture' : 'move',
+      style: active.style,
       phase: active.phase,
       elapsedMs: round(active.elapsedMs),
       durationMs: round(active.totalMs),
@@ -202,6 +237,13 @@ export class AnimationDirector {
         capturedId: active.move.capturedId ?? null,
       },
       attackerVisual: roundPose(active.attackerVisual),
+      projectile: active.projectileVisual
+        ? {
+            kind: 'cannonball',
+            progress: round(active.projectileProgress),
+            pose: roundPose(active.projectileVisual),
+          }
+        : null,
       victim:
         active.victimId && active.victimVisual && active.victimState
           ? {
@@ -227,22 +269,51 @@ export class AnimationDirector {
     if (!active) return
     const elapsed = active.elapsedMs
     const captureElapsed = elapsed - active.travelMs
+    let projectileOpacity = 0
+    let projectileTrailVisual = poseAt(active.move.from)
 
     if (elapsed < active.travelMs) {
       const t = elapsed / active.travelMs
       const eased = easeInOutCubic(t)
-      active.phase = 'travel'
-      active.attackerVisual = {
-        file: lerp(active.move.from.file, active.move.to.file, eased),
-        rank: lerp(active.move.from.rank, active.move.to.rank, eased),
-        lift:
-          Math.sin(Math.PI * t) *
-          (active.pieceKind === 'chariot' ? 0.045 : 0.12),
-        scale:
-          1 +
-          Math.sin(Math.PI * t) *
-            (active.pieceKind === 'chariot' ? 0.08 : 0.04),
-        rotationY: 0,
+      if (active.cannonCapture) {
+        active.phase = 'projectile'
+        active.attackerVisual = {
+          ...poseAt(active.move.from),
+          lift: Math.sin(Math.PI * t) * 0.025,
+          scale: 1 - Math.sin(Math.PI * t) * 0.025,
+        }
+        active.projectileProgress = t
+        active.projectileVisual = cannonProjectilePose(active.move, t)
+        projectileTrailVisual = cannonProjectilePose(
+          active.move,
+          Math.max(0, t - 0.075),
+        )
+        projectileOpacity = clamp(
+          Math.min(t / 0.08, (1 - t) / 0.1),
+          0,
+          1,
+        )
+      } else if (active.style === 'horse') {
+        active.phase = 'travel'
+        active.attackerVisual = horsePose(active.move.from, active.move.to, t)
+        active.projectileVisual = null
+        active.projectileProgress = 0
+      } else {
+        active.phase = 'travel'
+        active.attackerVisual = {
+          file: lerp(active.move.from.file, active.move.to.file, eased),
+          rank: lerp(active.move.from.rank, active.move.to.rank, eased),
+          lift:
+            Math.sin(Math.PI * t) *
+            (active.pieceKind === 'chariot' ? 0.045 : 0.12),
+          scale:
+            1 +
+            Math.sin(Math.PI * t) *
+              (active.pieceKind === 'chariot' ? 0.08 : 0.04),
+          rotationY: 0,
+        }
+        active.projectileVisual = null
+        active.projectileProgress = 0
       }
       active.victimState = active.victimId ? 'waiting' : null
       active.vfxActive = false
@@ -250,17 +321,24 @@ export class AnimationDirector {
         active.move.from,
         active.move.to,
         eased,
-        active.pieceKind === 'chariot' ? 0.78 * (1 - t * 0.35) : 0,
+        active.style === 'chariot' ? 0.78 * (1 - t * 0.35) : 0,
         active.side,
       )
     } else if (active.victimId && captureElapsed < active.impactMs) {
       const t = captureElapsed / active.impactMs
       active.phase = 'impact'
-      active.attackerVisual = {
-        ...poseAt(active.move.to),
-        lift: 0.12,
-        scale: 1 + Math.sin(Math.PI * t) * 0.1,
-      }
+      active.attackerVisual = active.cannonCapture
+        ? {
+            ...poseAt(active.move.from),
+            scale: 1 - Math.sin(Math.PI * t) * 0.04,
+          }
+        : {
+            ...poseAt(active.move.to),
+            lift: Math.sin(Math.PI * t) * 0.12,
+            scale: 1 + Math.sin(Math.PI * t) * 0.1,
+          }
+      active.projectileVisual = null
+      active.projectileProgress = 1
       active.victimVisual = active.victimSquare
         ? {
             ...poseAt(active.victimSquare),
@@ -273,7 +351,7 @@ export class AnimationDirector {
         active.move.from,
         active.move.to,
         1,
-        0.35 * (1 - t),
+        active.style === 'chariot' ? 0.35 * (1 - t) : 0,
         active.side,
       )
     } else if (
@@ -283,10 +361,27 @@ export class AnimationDirector {
       const t =
         (captureElapsed - active.impactMs) / active.victimExitMs
       active.phase = 'victim-exit'
-      active.attackerVisual = {
-        ...poseAt(active.move.to),
-        lift: 0.12 * (1 - t),
-      }
+      active.attackerVisual = active.cannonCapture
+        ? {
+            file: lerp(
+              active.move.from.file,
+              active.move.to.file,
+              easeInOutCubic(t),
+            ),
+            rank: lerp(
+              active.move.from.rank,
+              active.move.to.rank,
+              easeInOutCubic(t),
+            ),
+            lift: Math.sin(Math.PI * t) * 0.06,
+            scale: 1,
+            rotationY: 0,
+          }
+        : {
+            ...poseAt(active.move.to),
+          }
+      active.projectileVisual = null
+      active.projectileProgress = 1
       active.victimVisual = active.victimSquare
         ? {
             ...poseAt(active.victimSquare),
@@ -324,6 +419,8 @@ export class AnimationDirector {
         }
       }
       active.victimState = active.victimId ? 'exiting' : null
+      active.projectileVisual = null
+      active.projectileProgress = active.cannonCapture ? 1 : 0
       active.vfxActive = false
       this.surface.setMoveTrail(
         active.move.from,
@@ -334,6 +431,12 @@ export class AnimationDirector {
       )
     }
 
+    this.surface.setCannonProjectile(
+      active.projectileVisual ?? poseAt(active.move.from),
+      projectileTrailVisual,
+      projectileOpacity,
+    )
+
     this.surface.setPiecePose(active.move.pieceId, active.attackerVisual)
     if (active.victimId && active.victimVisual) {
       this.surface.setPiecePose(active.victimId, active.victimVisual)
@@ -342,11 +445,16 @@ export class AnimationDirector {
     if (active.victimSquare) {
       const whiteProgress = clamp(captureElapsed / 170, 0, 1)
       const orangeProgress = clamp((captureElapsed - 40) / 430, 0, 1)
+      active.vfxActive =
+        (whiteProgress > 0 && whiteProgress < 1) ||
+        (orangeProgress > 0 && orangeProgress < 1)
       this.surface.setCaptureImpact(
         active.victimSquare,
         whiteProgress,
         orangeProgress,
       )
+    } else {
+      active.vfxActive = false
     }
   }
 }
@@ -359,6 +467,68 @@ function poseAt(coord: BoardCoord): PiecePose {
     scale: 1,
     rotationY: 0,
   }
+}
+
+function horsePose(
+  from: BoardCoord,
+  to: BoardCoord,
+  progress: number,
+): PiecePose {
+  const fileDelta = to.file - from.file
+  const rankDelta = to.rank - from.rank
+  const leg =
+    Math.abs(fileDelta) === 2
+      ? {
+          file: from.file + Math.sign(fileDelta),
+          rank: from.rank,
+        }
+      : {
+          file: from.file,
+          rank: from.rank + Math.sign(rankDelta),
+        }
+  const inverse = 1 - progress
+  const fileTangent =
+    2 * inverse * (leg.file - from.file) +
+    2 * progress * (to.file - leg.file)
+  const rankTangent =
+    2 * inverse * (leg.rank - from.rank) +
+    2 * progress * (to.rank - leg.rank)
+
+  return {
+    file:
+      inverse ** 2 * from.file +
+      2 * inverse * progress * leg.file +
+      progress ** 2 * to.file,
+    rank:
+      inverse ** 2 * from.rank +
+      2 * inverse * progress * leg.rank +
+      progress ** 2 * to.rank,
+    lift: 4 * 0.48 * progress * (1 - progress),
+    scale: 1 + Math.sin(Math.PI * progress) * 0.04,
+    rotationY: Math.atan2(fileTangent, rankTangent),
+  }
+}
+
+function cannonProjectilePose(move: Move, progress: number): PiecePose {
+  const arcHeight = clamp(
+    0.35 + 0.09 * distanceBetween(move),
+    0.5,
+    0.9,
+  )
+  return {
+    file: lerp(move.from.file, move.to.file, progress),
+    rank: lerp(move.from.rank, move.to.rank, progress),
+    lift: 0.35 + 4 * arcHeight * progress * (1 - progress),
+    scale: 1 + Math.sin(Math.PI * progress) * 0.08,
+    rotationY: progress * Math.PI * 4,
+  }
+}
+
+function distanceBetween(move: Move): number {
+  return Math.hypot(
+    move.to.file - move.from.file,
+    move.to.rank - move.from.rank,
+  )
 }
 
 function lerp(from: number, to: number, progress: number): number {
