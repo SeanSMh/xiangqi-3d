@@ -105,4 +105,36 @@ describe('GameController', () => {
     expect(controller.getState().history).toHaveLength(0)
     expect(controller.getTimelineSnapshot().canUndo).toBe(false)
   })
+
+  it('程序化落子仍由权威规则校验，且支持原子撤销完整人机回合', () => {
+    const controller = new GameController()
+    expect(
+      controller.tryCommitMove({
+        pieceId: 'p12',
+        from: { file: 0, rank: 3 },
+        to: { file: 0, rank: 6 },
+      }),
+    ).toEqual({ type: 'ignored', reason: 'illegal' })
+
+    expect(
+      controller.tryCommitMove({
+        pieceId: 'p12',
+        from: { file: 0, rank: 3 },
+        to: { file: 0, rank: 4 },
+      }).type,
+    ).toBe('moved')
+    expect(
+      controller.tryCommitMove({
+        pieceId: 'p28',
+        from: { file: 0, rank: 6 },
+        to: { file: 0, rank: 5 },
+      }).type,
+    ).toBe('moved')
+
+    expect(controller.undoToSide('red')).toBe(2)
+    expect(controller.getState()).toMatchObject({
+      sideToMove: 'red',
+      history: [],
+    })
+  })
 })

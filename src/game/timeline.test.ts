@@ -30,6 +30,7 @@ describe('GameTimeline', () => {
     })
 
     expect(timeline.getSnapshot()).toMatchObject({
+      revision: 2,
       cursorPly: 2,
       livePly: 2,
       isReviewing: false,
@@ -43,6 +44,7 @@ describe('GameTimeline', () => {
     expect(timeline.getState().sideToMove).toBe('black')
     expect(timeline.getLiveState().history).toHaveLength(2)
     expect(timeline.getSnapshot()).toMatchObject({
+      revision: 3,
       cursorPly: 1,
       livePly: 2,
       isReviewing: true,
@@ -154,6 +156,37 @@ describe('GameTimeline', () => {
     })
     timeline.reset()
     expect(timeline.getState()).toEqual(root)
+  })
+
+  it('人机悔棋可原子回到人类决策点且 revision 只递增一次', () => {
+    const root = createInitialState()
+    const timeline = new GameTimeline(root)
+    timeline.commitMove({
+      pieceId: 'p12',
+      from: { file: 0, rank: 3 },
+      to: { file: 0, rank: 4 },
+    })
+    timeline.commitMove({
+      pieceId: 'p28',
+      from: { file: 0, rank: 6 },
+      to: { file: 0, rank: 5 },
+    })
+
+    expect(timeline.undoToSide('red')).toBe(2)
+    expect(timeline.getState()).toEqual(root)
+    expect(timeline.getSnapshot()).toMatchObject({
+      revision: 3,
+      cursorPly: 0,
+      livePly: 0,
+    })
+
+    timeline.commitMove({
+      pieceId: 'p12',
+      from: { file: 0, rank: 3 },
+      to: { file: 0, rank: 4 },
+    })
+    expect(timeline.undoToSide('red')).toBe(1)
+    expect(timeline.getSnapshot()).toMatchObject({ revision: 5, livePly: 0 })
   })
 })
 

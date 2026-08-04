@@ -1,12 +1,20 @@
 /**
- * 中国象棋 3D — 本地双人可玩切片
+ * 中国象棋 3D — 本地双人 / 人机可玩切片
  * 规则状态是唯一真相，Three.js 只负责呈现、演出与输入拾取。
  */
 import { AnimationDirector } from './animation/animationDirector'
 import { pieceAt, pieceLabel } from './engine/board'
+import { AiCoordinator } from './game/aiCoordinator'
 import { GameController } from './game/controller'
+import {
+  DEFAULT_MATCH_CONFIG,
+  AI_SIDE,
+  HUMAN_SIDE,
+  isAiTurn,
+  type MatchConfig,
+} from './game/match'
 import { BoardScene } from './scene/boardScene'
-import type { GameState } from './types/xiangqi'
+import type { GameState, Move } from './types/xiangqi'
 import { Hud } from './ui/hud'
 
 const appElement = document.querySelector<HTMLDivElement>('#app')
@@ -17,7 +25,10 @@ const REPLAY_STEP_MS = 700
 const controller = new GameController()
 const scene = new BoardScene(app)
 const animations = new AnimationDirector(scene)
+let matchConfig: MatchConfig = { ...DEFAULT_MATCH_CONFIG }
 const hud = new Hud(app, {
+  onToggleMatchSettings: () => toggleMatchSettings(),
+  onApplyMatchConfig: (config) => applyMatchConfig(config),
   onRestart: () => restartGame(),
   onToggleFullscreen: () => void toggleFullscreen(),
   onUndo: () => undoLastMove(),
@@ -29,6 +40,7 @@ const hud = new Hud(app, {
   onReplayNext: () => replayNext(),
   onReturnToLive: () => returnToLive(),
 })
+const aiCoordinator = new AiCoordinator(undefined, () => syncUiAndMarkers())
 let simulationTime = 0
 let replayPlaying = false
 let replayElapsedMs = 0
@@ -39,8 +51,8 @@ let lastFrameTime = performance.now()
 function syncUiAndMarkers(): void {
   const state = controller.getState()
   const timeline = controller.getTimelineSnapshot()
-  const inputLocked =
-    animations.isBusy || replayPlaying || timeline.isReviewing
+  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const inputLocked = isBoardInputLocked(state)
   scene.setInteractionState(
     state,
     inputLocked ? null : controller.getSelectedId(),
@@ -55,7 +67,13 @@ function syncUiAndMarkers(): void {
       replayPlaying,
       timeline,
       moveLog: controller.getMoveLog(),
+      matchConfig,
+      ai,
     },
+  )
+  scene.renderer.domElement.setAttribute(
+    'aria-busy',
+    String(animations.isBusy || ai.pending),
   )
 }
 
@@ -65,6 +83,7 @@ function snapEntireView(): void {
 }
 
 function restartGame(): void {
+  aiCoordinator.cancel(true)
   stopReplay()
   controller.reset()
   simulationTime = 0
@@ -72,10 +91,39 @@ function restartGame(): void {
   syncUiAndMarkers()
 }
 
+function toggleMatchSettings(): void {
+  const opening = !hud.isMatchSettingsOpen
+  if (
+    opening &&
+    (animations.isBusy ||
+      replayPlaying ||
+      controller.getTimelineSnapshot().isReviewing ||
+      aiCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
+  ) {
+    return
+  }
+  if (opening && hud.isHistoryOpen) {
+    hud.setHistoryOpen(false)
+  }
+  hud.setMatchSettingsOpen(opening, matchConfig)
+  syncUiAndMarkers()
+}
+
+function applyMatchConfig(config: MatchConfig): void {
+  matchConfig = { ...config }
+  hud.setMatchSettingsOpen(false, matchConfig)
+  restartGame()
+}
+
 function advanceSimulation(milliseconds: number): void {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return
   simulationTime += milliseconds
+  const animationWasBusy = animations.isBusy
   let changed = animations.advance(milliseconds)
+  if (animationWasBusy && !animations.isBusy) {
+    aiCoordinator.finishAnimation()
+    changed = true
+  }
 
   if (replayPlaying) {
     replayElapsedMs += milliseconds
@@ -92,18 +140,81 @@ function advanceSimulation(milliseconds: number): void {
     }
   }
 
+  if (advanceAi(animationWasBusy ? 0 : milliseconds)) {
+    changed = true
+  }
+
   if (changed) syncUiAndMarkers()
 }
 
+function advanceAi(milliseconds: number): boolean {
+  const state = controller.getState()
+  const timeline = controller.getTimelineSnapshot()
+  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const eligible =
+    isAiTurn(matchConfig, state) &&
+    !animations.isBusy &&
+    !replayPlaying &&
+    !timeline.isReviewing &&
+    !hud.isHistoryOpen &&
+    !hud.isMatchSettingsOpen
+
+  if (!eligible) return false
+  if (ai.phase === 'error' || ai.phase === 'animating') return false
+  if (ai.phase === 'idle') {
+    aiCoordinator.begin(state, matchConfig.difficulty, timeline.revision)
+    return true
+  }
+
+  const result = aiCoordinator.advance(milliseconds, timeline.revision)
+  if (!result) return false
+  if (!result.move) {
+    aiCoordinator.fail('AI 没有返回可执行着法')
+    return true
+  }
+  const currentState = controller.getState()
+  const currentTimeline = controller.getTimelineSnapshot()
+  if (
+    currentTimeline.revision !== timeline.revision ||
+    currentTimeline.isReviewing ||
+    !isAiTurn(matchConfig, currentState) ||
+    animations.isBusy ||
+    replayPlaying ||
+    hud.isHistoryOpen ||
+    hud.isMatchSettingsOpen
+  ) {
+    aiCoordinator.cancel()
+    return true
+  }
+
+  const committed = controller.tryCommitMove(result.move)
+  if (committed.type !== 'moved') {
+    aiCoordinator.fail(`AI 候选未通过权威规则校验：${committed.reason}`)
+    return true
+  }
+  aiCoordinator.markCommitted(result)
+  startMoveAnimation(committed.move)
+  return true
+}
+
 function undoLastMove(): void {
-  if (!controller.undoLastMove()) return
+  if (controller.getTimelineSnapshot().isReviewing) return
+  aiCoordinator.cancel(true)
   stopReplay()
+  const undone =
+    matchConfig.mode === 'ai'
+      ? controller.undoToSide(HUMAN_SIDE)
+      : controller.undoLastMove()
+        ? 1
+        : 0
+  if (undone === 0) return
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
 
 function toggleHistory(): void {
   const opening = !hud.isHistoryOpen
+  if (opening) aiCoordinator.cancel()
   if (!opening) {
     stopReplay()
     if (!animations.isBusy) {
@@ -117,6 +228,7 @@ function toggleHistory(): void {
 
 function seekReplay(ply: number): void {
   if (animations.isBusy || replayPlaying) return
+  aiCoordinator.cancel()
   if (!controller.seekReplay(ply)) return
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -129,6 +241,7 @@ function replayFirst(): void {
 
 function replayPrevious(): void {
   if (animations.isBusy || replayPlaying) return
+  aiCoordinator.cancel()
   if (!controller.stepReplayBackward()) return
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -136,6 +249,7 @@ function replayPrevious(): void {
 
 function replayNext(): void {
   if (animations.isBusy || replayPlaying) return
+  aiCoordinator.cancel()
   if (!controller.stepReplayForward()) return
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -143,6 +257,7 @@ function replayNext(): void {
 
 function returnToLive(): void {
   if (animations.isBusy) return
+  aiCoordinator.cancel()
   stopReplay()
   if (controller.returnToLive()) {
     animations.cancelAndSnap(controller.getState())
@@ -159,6 +274,7 @@ function toggleReplay(): void {
     return
   }
 
+  aiCoordinator.cancel()
   hud.setHistoryOpen(true)
   if (!timeline.isReviewing) {
     controller.seekReplay(timeline.firstAvailablePly)
@@ -187,13 +303,7 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 scene.renderer.domElement.addEventListener('pointerdown', (event) => {
-  const timeline = controller.getTimelineSnapshot()
-  if (
-    event.button !== 0 ||
-    animations.isBusy ||
-    replayPlaying ||
-    timeline.isReviewing
-  ) {
+  if (event.button !== 0 || isBoardInputLocked(controller.getState())) {
     return
   }
   const square = scene.pickSquare(event.clientX, event.clientY)
@@ -205,20 +315,37 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
     return
   }
 
+  startMoveAnimation(result.move)
+})
+
+function startMoveAnimation(move: Move): void {
   const committedState = controller.getState()
   // 不在此处 snap：旧 Mesh 必须保留给移动和受击退场演出。
   scene.setInteractionState(committedState, null, [])
-  if (!animations.start(result.move, committedState)) {
+  if (!animations.start(move, committedState)) {
     snapEntireView()
+    aiCoordinator.finishAnimation()
     return
   }
   syncUiAndMarkers()
-})
+}
+
+function isBoardInputLocked(state: GameState): boolean {
+  const timeline = controller.getTimelineSnapshot()
+  return (
+    animations.isBusy ||
+    replayPlaying ||
+    timeline.isReviewing ||
+    hud.isMatchSettingsOpen ||
+    isAiTurn(matchConfig, state)
+  )
+}
 
 window.addEventListener('keydown', (event) => {
   if (event.repeat || event.defaultPrevented || isEditableTarget(event.target)) {
     return
   }
+  if (hud.isMatchSettingsOpen) return
   const key = event.key.toLowerCase()
   const plainUndo =
     key === 'u' && !event.metaKey && !event.ctrlKey && !event.altKey
@@ -238,6 +365,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'f') {
     event.preventDefault()
     void toggleFullscreen()
+    return
+  }
+  if (key === 'm') {
+    event.preventDefault()
+    toggleMatchSettings()
     return
   }
   if (key === 'h') {
@@ -276,8 +408,8 @@ window.render_game_to_text = () => {
   const moveLog = controller.getMoveLog()
   const selected = controller.getSelectedPiece()
   const lastMove = state.history.at(-1)
-  const inputLocked =
-    animations.isBusy || replayPlaying || timeline.isReviewing
+  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const inputLocked = isBoardInputLocked(state)
   const historyWindowStart = Math.max(
     0,
     Math.min(
@@ -301,8 +433,23 @@ window.render_game_to_text = () => {
           ? 'replay-playing'
           : timeline.isReviewing
             ? 'replay-view'
-            : null,
+            : hud.isMatchSettingsOpen
+              ? 'match-settings'
+              : ai.phase === 'error'
+                ? 'ai-error'
+                : ai.phase === 'thinking'
+                  ? 'ai-thinking'
+                  : isAiTurn(matchConfig, state)
+                    ? 'ai-turn'
+                    : null,
       boardInputEnabled: state.status === 'playing' && !inputLocked,
+      match: {
+        ...matchConfig,
+        humanSide: HUMAN_SIDE,
+        aiSide: AI_SIDE,
+        settingsOpen: hud.isMatchSettingsOpen,
+      },
+      ai,
       animation: animations.getSnapshot(),
       presentation: scene.getPresentationSnapshot(state),
       timeline: {
@@ -405,5 +552,5 @@ function loop(now: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 棋谱时间线已就绪：支持单步悔棋、逐手定位与确定性自动回放。',
+  '[xiangqi-3d] 对局系统已就绪：支持本地双人、三级 AI、整回合悔棋与棋谱回放。',
 )

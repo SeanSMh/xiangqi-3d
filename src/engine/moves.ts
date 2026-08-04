@@ -278,7 +278,22 @@ export function generateLegalMoves(state: GameState, piece: Piece): Move[] {
 
 export function generateAllLegalMoves(state: GameState): Move[] {
   if (state.status !== 'playing') return []
-  return state.pieces.flatMap((piece) => generateLegalMoves(state, piece))
+  return state.pieces.flatMap((piece) =>
+    piece.side === state.sideToMove && !piece.captured
+      ? generateLegalMoves(state, piece)
+      : [],
+  )
+}
+
+/** 终局探测用：找到首个合法着即停止，避免构造完整着法数组。 */
+export function hasAnyLegalMove(state: GameState): boolean {
+  if (state.status !== 'playing') return false
+  return state.pieces.some(
+    (piece) =>
+      piece.side === state.sideToMove &&
+      !piece.captured &&
+      generateLegalMoves(state, piece).length > 0,
+  )
 }
 
 export function evaluateGameState(state: GameState): GameState {
@@ -288,7 +303,7 @@ export function evaluateGameState(state: GameState): GameState {
     winner: null,
     status: 'playing',
   }
-  if (generateAllLegalMoves(base).length > 0) return base
+  if (hasAnyLegalMove(base)) return base
 
   return {
     ...base,

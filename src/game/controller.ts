@@ -13,6 +13,13 @@ export type InteractionResult =
   | { type: 'moved'; move: Move }
   | { type: 'selected' | 'cleared' | 'ignored' }
 
+export type CommitMoveResult =
+  | { type: 'moved'; move: Move }
+  | {
+      type: 'ignored'
+      reason: 'reviewing' | 'terminal' | 'illegal'
+    }
+
 export interface MoveLogEntry {
   ply: number
   round: number
@@ -120,9 +127,10 @@ export class GameController {
           candidate.to.file === file && candidate.to.rank === rank,
       )
       if (move) {
-        this.timeline.commitMove(move)
-        this.clearSelection()
-        return { type: 'moved', move }
+        const committed = this.tryCommitMove(move)
+        return committed.type === 'moved'
+          ? committed
+          : { type: 'ignored' }
       }
 
       if (target?.id === selected.id) {
@@ -149,6 +157,39 @@ export class GameController {
     const changed = this.timeline.undo()
     if (changed) this.clearSelection()
     return changed
+  }
+
+  /** 人机模式使用：原子回退到指定阵营的上一个决策点。 */
+  undoToSide(side: Side): number {
+    const undone = this.timeline.undoToSide(side)
+    if (undone > 0) this.clearSelection()
+    return undone
+  }
+
+  /** 程序化落子统一入口；AI 与棋盘点击最终都由规则引擎二次校验。 */
+  tryCommitMove(requestedMove: Move): CommitMoveResult {
+    const timeline = this.timeline.getSnapshot()
+    if (timeline.isReviewing) {
+      return { type: 'ignored', reason: 'reviewing' }
+    }
+    if (this.getState().status !== 'playing') {
+      return { type: 'ignored', reason: 'terminal' }
+    }
+    try {
+      const state = this.timeline.commitMove(requestedMove)
+      const record = state.history.at(-1)
+      if (!record) return { type: 'ignored', reason: 'illegal' }
+      const move: Move = {
+        pieceId: record.pieceId,
+        from: { ...record.from },
+        to: { ...record.to },
+        ...(record.capturedId ? { capturedId: record.capturedId } : {}),
+      }
+      this.clearSelection()
+      return { type: 'moved', move }
+    } catch {
+      return { type: 'ignored', reason: 'illegal' }
+    }
   }
 
   stepReplayBackward(): boolean {

@@ -1,7 +1,8 @@
 import { applyMove } from '../engine/moves'
-import type { GameState, Move } from '../types/xiangqi'
+import type { GameState, Move, Side } from '../types/xiangqi'
 
 export interface TimelineSnapshot {
+  revision: number
   cursorPly: number
   livePly: number
   firstAvailablePly: number
@@ -24,6 +25,7 @@ export class GameTimeline {
   private readonly baseline: GameState
   private states: GameState[]
   private cursorIndex = 0
+  private revision = 0
 
   constructor(initialState: GameState) {
     this.baseline = cloneGameState(initialState)
@@ -44,6 +46,7 @@ export class GameTimeline {
     const cursorState = this.states[this.cursorIndex]!
     const liveState = this.states[lastIndex]!
     return {
+      revision: this.revision,
       cursorPly: cursorState.history.length,
       livePly: liveState.history.length,
       firstAvailablePly: this.states[0]!.history.length,
@@ -63,25 +66,55 @@ export class GameTimeline {
     const nextState = applyMove(this.states.at(-1)!, move)
     this.states.push(cloneGameState(nextState))
     this.cursorIndex = this.states.length - 1
+    this.revision += 1
     return cloneGameState(nextState)
   }
 
   undo(): boolean {
-    if (!this.getSnapshot().canUndo) return false
-    this.states.pop()
+    return this.undoPlies(1) === 1
+  }
+
+  undoPlies(requestedCount: number): number {
+    if (!this.getSnapshot().canUndo) return 0
+    if (!Number.isFinite(requestedCount) || requestedCount <= 0) return 0
+    const count = Math.min(
+      this.states.length - 1,
+      Math.max(0, Math.floor(requestedCount)),
+    )
+    if (count === 0) return 0
+    this.states.splice(this.states.length - count, count)
     this.cursorIndex = this.states.length - 1
-    return true
+    this.revision += 1
+    return count
+  }
+
+  /** 至少撤销一手，再继续回退到指定阵营重新行棋。 */
+  undoToSide(side: Side): number {
+    if (!this.getSnapshot().canUndo) return 0
+    let undone = 0
+    do {
+      this.states.pop()
+      undone += 1
+    } while (
+      this.states.length > 1 &&
+      this.states.at(-1)!.sideToMove !== side
+    )
+    this.cursorIndex = this.states.length - 1
+    this.revision += 1
+    return undone
   }
 
   stepBackward(): boolean {
     if (this.cursorIndex <= 0) return false
     this.cursorIndex -= 1
+    this.revision += 1
     return true
   }
 
   stepForward(): boolean {
     if (this.cursorIndex >= this.states.length - 1) return false
     this.cursorIndex += 1
+    this.revision += 1
     return true
   }
 
@@ -92,6 +125,7 @@ export class GameTimeline {
     )
     if (index < 0 || index === this.cursorIndex) return false
     this.cursorIndex = index
+    this.revision += 1
     return true
   }
 
@@ -99,12 +133,14 @@ export class GameTimeline {
     const lastIndex = this.states.length - 1
     if (this.cursorIndex === lastIndex) return false
     this.cursorIndex = lastIndex
+    this.revision += 1
     return true
   }
 
   reset(): void {
     this.states = [cloneGameState(this.baseline)]
     this.cursorIndex = 0
+    this.revision += 1
   }
 }
 
