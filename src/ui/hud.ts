@@ -1,19 +1,19 @@
-import { pieceLabel } from '../engine/board'
 import type { AiRuntimeSnapshot } from '../game/aiCoordinator'
 import type { MoveLogEntry } from '../game/controller'
 import {
-  aiDifficultyLabel,
   isAiTurn,
   matchModeLabel,
   type MatchConfig,
 } from '../game/match'
 import type { TimelineSnapshot } from '../game/timeline'
 import type { GameState, Piece, Side } from '../types/xiangqi'
+import type { GamePrompt } from './gamePrompt'
 import './hud.css'
 
 interface HudActions {
   onToggleMatchSettings: () => void
   onApplyMatchConfig: (config: MatchConfig) => void
+  onToggleRuleHelp: () => void
   onRestart: () => void
   onToggleFullscreen: () => void
   onUndo: () => void
@@ -33,6 +33,7 @@ interface HudViewState {
   moveLog: readonly MoveLogEntry[]
   matchConfig: MatchConfig
   ai: AiRuntimeSnapshot
+  prompt: GamePrompt
 }
 
 /** 左上局面、右上战果、底部操作、棋谱抽屉与终局提示。 */
@@ -42,10 +43,14 @@ export class Hud {
   private spoilsEl: HTMLDivElement
   private selectionEl: HTMLDivElement
   private gameStatusEl: HTMLDivElement
+  private gameStatusVisibleEl: HTMLSpanElement
+  private gameStatusLiveEl: HTMLSpanElement
   private undoButton: HTMLButtonElement
   private gameModeButton: HTMLButtonElement
   private historyToggleButton: HTMLButtonElement
+  private ruleHelpButton: HTMLButtonElement
   private settingsDialog: HTMLDialogElement
+  private ruleHelpDialog: HTMLDialogElement
   private modeLocalRadio: HTMLInputElement
   private modeAiRadio: HTMLInputElement
   private difficultyFieldset: HTMLFieldSetElement
@@ -78,9 +83,14 @@ export class Hud {
 
     this.gameStatusEl = document.createElement('div')
     this.gameStatusEl.id = 'game-status'
-    this.gameStatusEl.setAttribute('role', 'status')
-    this.gameStatusEl.setAttribute('aria-live', 'polite')
-    this.gameStatusEl.setAttribute('aria-atomic', 'true')
+    this.gameStatusVisibleEl = document.createElement('span')
+    this.gameStatusVisibleEl.setAttribute('aria-hidden', 'true')
+    this.gameStatusLiveEl = document.createElement('span')
+    this.gameStatusLiveEl.className = 'xq-sr-only'
+    this.gameStatusLiveEl.setAttribute('role', 'status')
+    this.gameStatusLiveEl.setAttribute('aria-live', 'polite')
+    this.gameStatusLiveEl.setAttribute('aria-atomic', 'true')
+    this.gameStatusEl.append(this.gameStatusVisibleEl, this.gameStatusLiveEl)
 
     const controls = document.createElement('div')
     controls.className = 'xq-controls'
@@ -108,6 +118,15 @@ export class Hud {
       'move-history-panel',
     )
     this.historyToggleButton.setAttribute('aria-expanded', 'false')
+    this.ruleHelpButton = makeButton(
+      'rule-help-btn',
+      '规则 ?',
+      actions.onToggleRuleHelp,
+    )
+    this.ruleHelpButton.setAttribute('aria-haspopup', 'dialog')
+    this.ruleHelpButton.setAttribute('aria-controls', 'rule-help-dialog')
+    this.ruleHelpButton.setAttribute('aria-expanded', 'false')
+    this.ruleHelpButton.setAttribute('aria-keyshortcuts', '?')
     const restartButton = makeButton('restart-btn', '重开 R', actions.onRestart)
     const fullscreenButton = makeButton(
       'fullscreen-btn',
@@ -119,6 +138,7 @@ export class Hud {
       this.gameModeButton,
       this.undoButton,
       this.historyToggleButton,
+      this.ruleHelpButton,
       restartButton,
       fullscreenButton,
     )
@@ -209,6 +229,54 @@ export class Hud {
       actions.onToggleMatchSettings()
     })
 
+    this.ruleHelpDialog = document.createElement('dialog')
+    this.ruleHelpDialog.id = 'rule-help-dialog'
+    this.ruleHelpDialog.setAttribute('aria-labelledby', 'rule-help-heading')
+    this.ruleHelpDialog.setAttribute('aria-describedby', 'rule-help-summary')
+    const ruleHelpHeader = document.createElement('div')
+    ruleHelpHeader.className = 'settings-header'
+    const ruleHelpHeading = document.createElement('h2')
+    ruleHelpHeading.id = 'rule-help-heading'
+    ruleHelpHeading.textContent = '本局规则与提示'
+    const ruleHelpCloseButton = makeButton(
+      'rule-help-close-btn',
+      '关闭',
+      actions.onToggleRuleHelp,
+    )
+    ruleHelpCloseButton.classList.add('settings-close')
+    ruleHelpHeader.append(ruleHelpHeading, ruleHelpCloseButton)
+
+    const ruleHelpContent = document.createElement('div')
+    ruleHelpContent.className = 'rule-help-content'
+    const ruleHelpSummary = document.createElement('p')
+    ruleHelpSummary.id = 'rule-help-summary'
+    ruleHelpSummary.textContent =
+      '本作采用适合网页自动裁决的程序棋规；复杂循环按确定性等级处理，与需要裁判介入的线下竞赛细则可能存在差异。'
+    ruleHelpContent.append(
+      ruleHelpSummary,
+      makeRuleSection('基础胜负', [
+        '红方先行；走棋后不能让己方帅／将受将，也不能造成将帅照面。',
+        '将死判负；未被将军但无任何合法着法时，困毙同样判负。',
+        '盘面只剩帅／将、仕／士、相／象时，自动判和。',
+      ]),
+      makeRuleSection('循环与限着', [
+        '同色同类棋子布局且同一方行棋第三次出现时，立即进行循环裁决。',
+        '循环等级为：长将 2、长捉 1、允许循环 0；等级较高的一方判负，等级相同判和。',
+        '自然限着为 120 个有效未吃子着；双方各自仅前 10 次将军计数，超额将军及直接应将不计。',
+        '裁决优先级：将死／困毙、循环、自然限着、仅剩将士象。',
+      ]),
+      makeRuleSection('界面提示', [
+        '点错棋子或落点时会说明具体原因；被将军时必须先应将。',
+        '第二次形成同一局面会提醒双方避免重复；第三次同形立即裁决。',
+        '棋谱回放只读；返回当前局面后才能继续对局。',
+      ]),
+    )
+    this.ruleHelpDialog.append(ruleHelpHeader, ruleHelpContent)
+    this.ruleHelpDialog.addEventListener('cancel', (event) => {
+      event.preventDefault()
+      actions.onToggleRuleHelp()
+    })
+
     this.historyPanel = document.createElement('aside')
     this.historyPanel.id = 'move-history-panel'
     this.historyPanel.setAttribute('aria-labelledby', 'history-heading')
@@ -278,6 +346,7 @@ export class Hud {
       this.gameStatusEl,
       controls,
       this.settingsDialog,
+      this.ruleHelpDialog,
       this.historyPanel,
     )
     container.appendChild(root)
@@ -289,6 +358,10 @@ export class Hud {
 
   get isMatchSettingsOpen(): boolean {
     return this.settingsDialog.open
+  }
+
+  get isRuleHelpOpen(): boolean {
+    return this.ruleHelpDialog.open
   }
 
   setMatchSettingsOpen(open: boolean, config: MatchConfig): void {
@@ -310,6 +383,20 @@ export class Hud {
     }
   }
 
+  setRuleHelpOpen(open: boolean): void {
+    if (open === this.ruleHelpDialog.open) return
+    this.ruleHelpButton.setAttribute('aria-expanded', String(open))
+    if (open) {
+      this.ruleHelpDialog.showModal()
+      this.ruleHelpDialog
+        .querySelector<HTMLButtonElement>('#rule-help-close-btn')
+        ?.focus({ preventScroll: true })
+    } else {
+      this.ruleHelpDialog.close()
+      this.ruleHelpButton.focus({ preventScroll: true })
+    }
+  }
+
   setHistoryOpen(open: boolean): void {
     const panelHadFocus = this.historyPanel.contains(document.activeElement)
     this.historyOpen = open
@@ -325,8 +412,8 @@ export class Hud {
 
   update(
     state: GameState,
-    selected: Piece | undefined,
-    legalCount: number,
+    _selected: Piece | undefined,
+    _legalCount: number,
     view: HudViewState,
   ): void {
     const {
@@ -336,17 +423,21 @@ export class Hud {
       moveLog,
       matchConfig,
       ai,
+      prompt,
     } = view
     const aiTurn = isAiTurn(matchConfig, state)
     const sideLabel = state.sideToMove === 'red' ? '红方' : '黑方'
     const sideColor = state.sideToMove === 'red' ? '#ff665c' : '#80bfff'
     this.turnLabelEl.textContent = timeline.isReviewing
       ? `回放 ${timeline.cursorPly} / ${timeline.livePly} · ${sideLabel}`
-      : aiTurn
-        ? `第 ${timeline.livePly + 1} 手 · 黑方 AI 行棋`
-        : `第 ${timeline.livePly + 1} 手 · ${sideLabel}行棋`
+      : state.status !== 'playing'
+        ? `第 ${timeline.livePly} 手 · 对局结束`
+        : aiTurn
+          ? `第 ${timeline.livePly + 1} 手 · 黑方 AI 行棋`
+          : `第 ${timeline.livePly + 1} 手 · ${sideLabel}行棋`
     this.turnLabelEl.style.color = sideColor
     this.turnLabelEl.style.fontWeight = '700'
+    this.checkEl.textContent = `${sideLabel}被将`
     this.checkEl.style.display = state.inCheck ? 'inline-block' : 'none'
 
     this.spoilsEl.innerHTML = `
@@ -355,68 +446,33 @@ export class Hud {
       <div class="spoils-count" style="opacity:.5;font-size:10px;margin-top:5px">已吃 ${capturedCount(state)} 子</div>
     `
 
-    this.gameStatusEl.style.borderColor = 'rgba(212,175,55,.35)'
-    this.gameStatusEl.classList.toggle('is-ai-thinking', ai.phase === 'thinking')
-    if (animationBusy) {
-      this.gameStatusEl.textContent =
-        ai.phase === 'animating'
-          ? 'AI 已落子 · 战斗演出中'
-          : '战斗演出中 · 棋盘输入已锁定'
-      this.gameStatusEl.style.color = '#ffcc80'
-    } else if (replayPlaying) {
-      this.gameStatusEl.textContent = `棋谱回放 · 第 ${timeline.cursorPly} / ${timeline.livePly} 手`
-      this.gameStatusEl.style.color = '#ffe082'
-    } else if (timeline.isReviewing) {
-      this.gameStatusEl.textContent = `回放局面 · 第 ${timeline.cursorPly} / ${timeline.livePly} 手`
-      this.gameStatusEl.style.color = '#b9dcff'
-    } else if (ai.phase === 'error') {
-      this.gameStatusEl.textContent = 'AI 暂时无法行动，请重开或切换模式'
-      this.gameStatusEl.style.color = '#ff8a80'
-    } else if (this.historyOpen && aiTurn && ai.phase === 'idle') {
-      this.gameStatusEl.textContent = 'AI 已暂停 · 关闭棋谱后继续'
-      this.gameStatusEl.style.color = '#b9dcff'
-    } else if (ai.phase === 'thinking' || aiTurn) {
-      this.gameStatusEl.textContent = `黑方 AI 正在思考 · ${aiDifficultyLabel(matchConfig.difficulty)}`
-      this.gameStatusEl.style.color = '#ffe082'
-    } else if (state.status === 'playing') {
-      this.gameStatusEl.textContent = state.inCheck
-        ? `${sideLabel}正在被将军，请应将`
-        : matchConfig.mode === 'ai'
-          ? '人机对弈 · 轮到你（红方）'
-          : '本地双人对局'
-      this.gameStatusEl.style.color = state.inCheck ? '#ff8a80' : '#f4df91'
-    } else {
-      const winner = state.winner === 'red' ? '红方' : '黑方'
-      const reason = state.status === 'checkmate' ? '绝杀' : '困毙'
-      this.gameStatusEl.textContent = `${winner}获胜 · ${reason}`
-      this.gameStatusEl.style.color = '#ffd45a'
-      this.gameStatusEl.style.borderColor = 'rgba(255,188,45,.8)'
+    this.gameStatusEl.dataset.tone = prompt.tone
+    this.gameStatusEl.dataset.promptCode = prompt.code
+    this.gameStatusEl.classList.toggle('is-ai-thinking', prompt.code === 'ai-thinking')
+    if (this.gameStatusVisibleEl.textContent !== prompt.title) {
+      this.gameStatusVisibleEl.textContent = prompt.title
     }
-
-    if (animationBusy) {
-      this.selectionEl.textContent = '正在执行走子演出；可悔棋或重开'
-    } else if (replayPlaying) {
-      this.selectionEl.textContent = '正在自动回放棋谱…'
-    } else if (timeline.isReviewing) {
-      this.selectionEl.textContent = `正在查看第 ${timeline.cursorPly} / ${timeline.livePly} 手，返回当前后可继续行棋`
-    } else if (ai.phase === 'error') {
-      this.selectionEl.textContent = ai.error ?? 'AI Worker 运行失败'
-    } else if (this.historyOpen && aiTurn && ai.phase === 'idle') {
-      this.selectionEl.textContent = '正在查看棋谱；关闭棋谱后 AI 会重新思考'
-    } else if (ai.phase === 'thinking' || aiTurn) {
-      this.selectionEl.textContent = 'AI 执黑，思考期间可悔棋、重开或查看棋谱'
-    } else if (state.status !== 'playing') {
-      this.selectionEl.textContent = '对局结束，可悔棋或点击“重开”'
-    } else if (selected) {
-      const faction = selected.side === 'red' ? '红' : '黑'
-      this.selectionEl.textContent = `已选 ${faction}${pieceLabel(selected.kind, selected.side)} · ${legalCount} 个合法落点`
-    } else {
-      this.selectionEl.textContent = '点选棋子，再点亮起的合法落点'
+    const promptDetails = [
+      prompt.detail,
+      prompt.action,
+      prompt.secondary,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    const accessiblePrompt = [prompt.title, promptDetails]
+      .filter(Boolean)
+      .join('。')
+    if (this.gameStatusLiveEl.textContent !== accessiblePrompt) {
+      this.gameStatusLiveEl.textContent = accessiblePrompt
+    }
+    if (this.selectionEl.textContent !== promptDetails) {
+      this.selectionEl.textContent = promptDetails
     }
 
     this.gameModeButton.textContent = `${matchModeLabel(matchConfig)} M`
     this.gameModeButton.disabled =
       animationBusy || replayPlaying || timeline.isReviewing || ai.phase === 'thinking'
+    this.ruleHelpButton.disabled = this.gameModeButton.disabled
     this.undoButton.disabled = !timeline.canUndo
     this.replayFirstButton.disabled =
       animationBusy || replayPlaying || timeline.cursorPly === timeline.firstAvailablePly
@@ -570,6 +626,20 @@ function makeRadioCard(
   copy.append(titleEl, descriptionEl)
   label.append(radio, copy)
   return label
+}
+
+function makeRuleSection(title: string, items: string[]): HTMLElement {
+  const section = document.createElement('section')
+  const heading = document.createElement('h3')
+  heading.textContent = title
+  const list = document.createElement('ul')
+  for (const item of items) {
+    const row = document.createElement('li')
+    row.textContent = item
+    list.appendChild(row)
+  }
+  section.append(heading, list)
+  return section
 }
 
 function makeHistoryRow(

@@ -164,6 +164,23 @@ describe('chooseAiMove', () => {
       completedDepth: 0,
     })
 
+    const draw: GameState = {
+      ...terminal,
+      status: 'draw',
+      winner: null,
+      outcome: {
+        reason: 'repetition-draw',
+        winner: null,
+        offender: null,
+      },
+    }
+    expect(chooseAiMove(draw, { difficulty: 'hard' })).toMatchObject({
+      move: null,
+      score: 0,
+      nodes: 0,
+      completedDepth: 0,
+    })
+
     const stalemate = game(
       [
         piece('rk', 'king', 'red', 4, 0),

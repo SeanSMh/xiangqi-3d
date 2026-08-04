@@ -43,7 +43,67 @@ export interface MoveRecord extends Move {
   givesCheck: boolean
 }
 
-export type GameStatus = 'playing' | 'checkmate' | 'stalemate'
+export type CycleBehavior = 'long-check' | 'long-chase' | 'allowed'
+
+export type GameEndReason =
+  | 'checkmate'
+  | 'stalemate'
+  | 'repetition-draw'
+  | 'perpetual-check'
+  | 'perpetual-chase'
+  | 'no-capture-limit'
+  | 'bare-defenders'
+
+export interface CycleAdjudication {
+  startPly: number
+  endPly: number
+  periodPlies: number
+  red: CycleBehavior
+  black: CycleBehavior
+}
+
+export interface GameOutcome {
+  reason: GameEndReason
+  winner: Side | null
+  offender: Side | null
+  cycle?: CycleAdjudication
+}
+
+export interface ChaseThreat {
+  attackerId: string
+  targetId: string
+}
+
+export interface RuleFrame {
+  /** 该帧对应的绝对着数；初始帧为当前 history.length。 */
+  ply: number
+  /** 不含棋子 id、与 pieces 数组顺序无关，并包含行棋方。 */
+  positionKey: string
+  chases: Record<Side, ChaseThreat[]>
+}
+
+export interface NaturalLimitState {
+  /** 程序棋规中的“有效未吃子步”，达到 120 判和。 */
+  countedPlies: number
+  checkCounts: Record<Side, number>
+  /** 上一着为某方第 11 次及之后的将军，本次应将不计步。 */
+  skipNextReply: boolean
+}
+
+export interface RuleState {
+  ruleset: 'program-competition-2023'
+  /** 自最近一次吃子后的局面帧；吃子前局面不可能再次出现。 */
+  frames: RuleFrame[]
+  currentPositionOccurrences: number
+  naturalLimit: NaturalLimitState
+}
+
+export type GameStatus =
+  | 'playing'
+  | 'checkmate'
+  | 'stalemate'
+  | 'adjudicated'
+  | 'draw'
 
 export interface GameState {
   pieces: Piece[]
@@ -52,4 +112,7 @@ export interface GameState {
   inCheck: boolean
   winner: Side | null
   status: GameStatus
+  /** 旧测试局面可省略；第一次进入规则引擎时会按当前局面初始化。 */
+  outcome?: GameOutcome | null
+  ruleState?: RuleState
 }

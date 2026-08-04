@@ -153,5 +153,29 @@ function cloneGameState(state: GameState): GameState {
       from: { ...record.from },
       to: { ...record.to },
     })),
+    outcome: state.outcome
+      ? {
+          ...state.outcome,
+          ...(state.outcome.cycle
+            ? { cycle: { ...state.outcome.cycle } }
+            : {}),
+        }
+      : state.outcome,
+    ruleState: state.ruleState
+      ? {
+          ...state.ruleState,
+          frames: state.ruleState.frames.map((frame) => ({
+            ...frame,
+            chases: {
+              red: frame.chases.red.map((threat) => ({ ...threat })),
+              black: frame.chases.black.map((threat) => ({ ...threat })),
+            },
+          })),
+          naturalLimit: {
+            ...state.ruleState.naturalLimit,
+            checkCounts: { ...state.ruleState.naturalLimit.checkCounts },
+          },
+        }
+      : undefined,
   }
 }

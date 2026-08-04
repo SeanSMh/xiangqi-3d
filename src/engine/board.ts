@@ -1,4 +1,5 @@
 import type { GameState, Piece, Side } from '../types/xiangqi'
+import { createRuleState } from './adjudication'
 
 /** 标准开局布局（红方在 rank 0 一侧） */
 export function createInitialPieces(): Piece[] {
@@ -37,13 +38,16 @@ export function createInitialPieces(): Piece[] {
 }
 
 export function createInitialState(): GameState {
+  const pieces = createInitialPieces()
   return {
-    pieces: createInitialPieces(),
+    pieces,
     sideToMove: 'red',
     history: [],
     inCheck: false,
     winner: null,
     status: 'playing',
+    outcome: null,
+    ruleState: createRuleState(pieces, 'red'),
   }
 }
 

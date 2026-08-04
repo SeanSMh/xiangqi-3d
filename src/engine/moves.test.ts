@@ -326,4 +326,23 @@ describe('执行着法与终局', () => {
     expect(result.status).toBe('stalemate')
     expect(result.winner).toBe('red')
   })
+
+  it('已裁决终局再次评估时保持终局，不会被重新打开', () => {
+    const terminal: GameState = {
+      ...createInitialState(),
+      status: 'draw',
+      outcome: {
+        reason: 'no-capture-limit',
+        winner: null,
+        offender: null,
+      },
+    }
+
+    expect(evaluateGameState(terminal)).toBe(terminal)
+    expect(evaluateGameState(terminal)).toMatchObject({
+      status: 'draw',
+      winner: null,
+      outcome: { reason: 'no-capture-limit' },
+    })
+  })
 })

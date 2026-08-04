@@ -1,5 +1,6 @@
 import type {
   BoardCoord,
+  ChaseThreat,
   GameState,
   Move,
   MoveRecord,
@@ -7,6 +8,12 @@ import type {
   Side,
 } from '../types/xiangqi'
 import { oppositeSide, pieceAt } from './board'
+import {
+  advanceRuleState,
+  emptyChases,
+  evaluateAdjudication,
+  nextPositionOccurrenceCount,
+} from './adjudication'
 
 const ORTHOGONAL_DIRECTIONS = [
   [1, 0],
@@ -267,13 +274,29 @@ export function generateLegalMoves(state: GameState, piece: Piece): Move[] {
     return []
   }
 
-  return generatePseudoLegalMoves(state.pieces, currentPiece).filter((move) => {
+  return generateLegalMovesForPiece(state.pieces, currentPiece)
+}
+
+function generateLegalMovesForPiece(pieces: Piece[], piece: Piece): Move[] {
+  return generatePseudoLegalMoves(pieces, piece).filter((move) => {
     const captured = move.capturedId
-      ? state.pieces.find((candidate) => candidate.id === move.capturedId)
+      ? pieces.find((candidate) => candidate.id === move.capturedId)
       : undefined
     if (captured?.kind === 'king') return false
-    return !isInCheck(simulateMove(state.pieces, move), currentPiece.side)
+    return !isInCheck(simulateMove(pieces, move), piece.side)
   })
+}
+
+/** 无视实际轮次，为规则分析生成某方的完整合法着。 */
+export function generateLegalMovesForSide(
+  pieces: Piece[],
+  side: Side,
+): Move[] {
+  return pieces.flatMap((piece) =>
+    piece.side === side && !piece.captured
+      ? generateLegalMovesForPiece(pieces, piece)
+      : [],
+  )
 }
 
 export function generateAllLegalMoves(state: GameState): Move[] {
@@ -297,18 +320,28 @@ export function hasAnyLegalMove(state: GameState): boolean {
 }
 
 export function evaluateGameState(state: GameState): GameState {
+  if (state.status !== 'playing') return state
+
   const base: GameState = {
     ...state,
     inCheck: isInCheck(state.pieces, state.sideToMove),
     winner: null,
     status: 'playing',
+    outcome: null,
   }
   if (hasAnyLegalMove(base)) return base
 
+  const winner = oppositeSide(base.sideToMove)
+  const status = base.inCheck ? 'checkmate' : 'stalemate'
   return {
     ...base,
-    winner: oppositeSide(base.sideToMove),
-    status: base.inCheck ? 'checkmate' : 'stalemate',
+    winner,
+    status,
+    outcome: {
+      reason: status,
+      winner,
+      offender: base.sideToMove,
+    },
   }
 }
 
@@ -339,6 +372,29 @@ export function applyMove(state: GameState, requestedMove: Move): GameState {
     throw new Error('非法着法')
   }
 
+  return applyKnownLegalMove(state, move)
+}
+
+export interface ApplyKnownLegalMoveOptions {
+  /** AI 叶节点只在即将第三次同形时支付长捉分析成本。 */
+  chaseAnalysis?: 'always' | 'if-repeated' | 'if-third'
+  /** 搜索评分本身会探测无合法着；无规则终局时可延后该遍历。 */
+  deferBoardTerminal?: boolean
+}
+
+/**
+ * 执行已经由 generateLegalMoves 产生的规范着法。AI 可复用该转换，避免
+ * 搜索层自行拼装不完整 GameState；外部玩家输入仍应使用 applyMove。
+ */
+export function applyKnownLegalMove(
+  state: GameState,
+  move: Move,
+  options: ApplyKnownLegalMoveOptions = {},
+): GameState {
+  if (state.status !== 'playing') {
+    throw new Error('游戏已经结束')
+  }
+
   const pieces = simulateMove(state.pieces, move)
   const sideToMove = oppositeSide(state.sideToMove)
   const givesCheck = isInCheck(pieces, sideToMove)
@@ -348,12 +404,144 @@ export function applyMove(state: GameState, requestedMove: Move): GameState {
     givesCheck,
   }
 
-  return evaluateGameState({
+  const candidate: GameState = {
     pieces,
     sideToMove,
     history: [...state.history, record],
     inCheck: givesCheck,
     winner: null,
     status: 'playing',
-  })
+    outcome: null,
+    ruleState: state.ruleState,
+  }
+  const boardResult = options.deferBoardTerminal
+    ? candidate
+    : evaluateGameState(candidate)
+
+  const occurrenceCount = nextPositionOccurrenceCount(
+    state,
+    pieces,
+    sideToMove,
+  )
+  const chaseAnalysis = options.chaseAnalysis ?? 'always'
+  const shouldAnalyzeChases =
+    boardResult.status === 'playing' &&
+    !givesCheck &&
+    (chaseAnalysis === 'always' ||
+      (chaseAnalysis === 'if-repeated' && occurrenceCount >= 2) ||
+      (chaseAnalysis === 'if-third' && occurrenceCount >= 3))
+  const ruleState = advanceRuleState(
+    state,
+    pieces,
+    sideToMove,
+    record,
+    shouldAnalyzeChases ? analyzeChases(pieces) : emptyChases(),
+  )
+  const withRuleState: GameState = { ...boardResult, ruleState }
+  if (withRuleState.status !== 'playing') return withRuleState
+
+  const outcome = evaluateAdjudication(withRuleState)
+  if (!outcome) return withRuleState
+  if (options.deferBoardTerminal) {
+    const boardTerminal = evaluateGameState(withRuleState)
+    if (boardTerminal.status !== 'playing') return boardTerminal
+  }
+  return {
+    ...withRuleState,
+    status: outcome.winner ? 'adjudicated' : 'draw',
+    winner: outcome.winner,
+    outcome,
+  }
+}
+
+/**
+ * 计算程序棋规中的“捉”。此分析不调用 applyMove，避免终局裁决递归。
+ */
+export function analyzeChases(
+  pieces: Piece[],
+): Record<Side, ChaseThreat[]> {
+  return {
+    red: analyzeSideChases(pieces, 'red'),
+    black: analyzeSideChases(pieces, 'black'),
+  }
+}
+
+function analyzeSideChases(pieces: Piece[], side: Side): ChaseThreat[] {
+  const threats: ChaseThreat[] = []
+  const seen = new Set<string>()
+  for (const capture of generateLegalMovesForSide(pieces, side)) {
+    if (!capture.capturedId) continue
+    const attacker = pieces.find((piece) => piece.id === capture.pieceId)
+    const target = pieces.find((piece) => piece.id === capture.capturedId)
+    if (!attacker || !target || target.kind === 'king') continue
+    if (attacker.kind === 'king' || attacker.kind === 'pawn') continue
+    if (target.kind === 'pawn' && !hasCrossedRiver(target)) continue
+
+    const reciprocalSameKind =
+      attacker.kind === target.kind &&
+      canPieceLegallyCapture(pieces, target, attacker.id)
+    if (reciprocalSameKind) continue
+
+    const afterCapture = simulateMove(pieces, capture)
+    const attackerCanBeRecaptured = canLegallyCapture(
+      afterCapture,
+      target.side,
+      attacker.id,
+    )
+    if (
+      attackerCanBeRecaptured &&
+      !protectedCaptureException(attacker, target)
+    ) {
+      continue
+    }
+
+    const key = `${attacker.id}:${target.id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    threats.push({ attackerId: attacker.id, targetId: target.id })
+  }
+  return threats.sort(
+    (left, right) =>
+      left.targetId.localeCompare(right.targetId) ||
+      left.attackerId.localeCompare(right.attackerId),
+  )
+}
+
+function canLegallyCapture(
+  pieces: Piece[],
+  side: Side,
+  targetId: string,
+): boolean {
+  return generateLegalMovesForSide(pieces, side).some(
+    (move) => move.capturedId === targetId,
+  )
+}
+
+function canPieceLegallyCapture(
+  pieces: Piece[],
+  piece: Piece,
+  targetId: string,
+): boolean {
+  return generateLegalMovesForPiece(pieces, piece).some(
+    (move) => move.capturedId === targetId,
+  )
+}
+
+function hasCrossedRiver(piece: Piece): boolean {
+  return piece.side === 'red' ? piece.rank >= 5 : piece.rank <= 4
+}
+
+function protectedCaptureException(attacker: Piece, target: Piece): boolean {
+  if (
+    (attacker.kind === 'horse' || attacker.kind === 'cannon') &&
+    target.kind === 'chariot'
+  ) {
+    return true
+  }
+  return (
+    (attacker.kind === 'advisor' || attacker.kind === 'elephant') &&
+    (target.kind === 'horse' ||
+      target.kind === 'cannon' ||
+      target.kind === 'chariot')
+  )
 }

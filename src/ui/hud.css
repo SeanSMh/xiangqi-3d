@@ -6,6 +6,17 @@
   user-select: none;
 }
 
+.xq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .xq-panel {
   position: absolute;
   padding: 11px 14px;
@@ -58,6 +69,25 @@
   font-size: 13px;
   letter-spacing: 0.04em;
   text-align: center;
+}
+
+#game-status[data-tone='info'] {
+  color: #f4df91;
+}
+
+#game-status[data-tone='warning'] {
+  border-color: rgba(255, 183, 77, 0.72);
+  color: #ffcc80;
+}
+
+#game-status[data-tone='danger'] {
+  border-color: rgba(255, 91, 82, 0.78);
+  color: #ff8a80;
+}
+
+#game-status[data-tone='success'] {
+  border-color: rgba(255, 188, 45, 0.8);
+  color: #ffd45a;
 }
 
 #game-status.is-ai-thinking::before {
@@ -126,7 +156,8 @@
   cursor: not-allowed;
 }
 
-#game-settings-dialog {
+#game-settings-dialog,
+#rule-help-dialog {
   width: min(430px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   box-sizing: border-box;
@@ -140,11 +171,13 @@
   pointer-events: auto;
 }
 
-#game-settings-dialog[open] {
+#game-settings-dialog[open],
+#rule-help-dialog[open] {
   animation: settings-enter 150ms ease-out;
 }
 
-#game-settings-dialog::backdrop {
+#game-settings-dialog::backdrop,
+#rule-help-dialog::backdrop {
   background: rgba(3, 4, 8, 0.68);
   backdrop-filter: blur(5px);
 }
@@ -269,6 +302,42 @@
   background: linear-gradient(180deg, #735323, #4d351d);
   color: #fff4c5;
   font-weight: 700;
+}
+
+#rule-help-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.rule-help-content {
+  padding: 4px 20px 20px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.rule-help-content > p {
+  margin: 14px 0 16px;
+  color: #f4df91;
+}
+
+.rule-help-content section + section {
+  margin-top: 14px;
+}
+
+.rule-help-content h3 {
+  margin: 0 0 6px;
+  color: #fff1b8;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.rule-help-content ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.rule-help-content li + li {
+  margin-top: 4px;
 }
 
 #move-history-panel {
@@ -448,7 +517,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   #game-status.is-ai-thinking::before,
-  #game-settings-dialog[open] {
+  #game-settings-dialog[open],
+  #rule-help-dialog[open] {
     animation: none;
   }
 }

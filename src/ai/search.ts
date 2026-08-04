@@ -1,9 +1,9 @@
 import { oppositeSide } from '../engine/board'
+import { positionKey } from '../engine/adjudication'
 import {
+  applyKnownLegalMove,
   generateAllLegalMoves,
   hasAnyLegalMove,
-  isInCheck,
-  simulateMove,
 } from '../engine/moves'
 import type {
   GameState,
@@ -89,7 +89,7 @@ export function chooseAiMove(
 
   const roots: RootCandidate[] = []
   for (const move of legalMoves) {
-    const next = applySearchMove(state, move)
+    const next = applySearchMove(state, move, 'if-repeated')
     context.nodes += 1
     roots.push({
       move,
@@ -141,6 +141,14 @@ function scoreShallowCandidate(
   context: SearchContext,
   difficulty: Exclude<AiDifficulty, 'hard'>,
 ): Candidate {
+  if (state.status !== 'playing') {
+    return {
+      move,
+      score: terminalScore(state.winner, context.rootSide, 1),
+      principalVariation: [move],
+      fullDepth: true,
+    }
+  }
   let score = evaluatePosition(state, context.rootSide)
 
   if (difficulty === 'normal') {
@@ -167,6 +175,14 @@ function scoreHardCandidate(
   move: Move,
   context: SearchContext,
 ): Candidate {
+  if (state.status !== 'playing') {
+    return {
+      move,
+      score: terminalScore(state.winner, context.rootSide, 1),
+      principalVariation: [move],
+      fullDepth: true,
+    }
+  }
   const replies = orderMoves(state, generateAllLegalMoves(state))
   if (replies.length === 0) {
     return {
@@ -185,12 +201,15 @@ function scoreHardCandidate(
       fullDepth = false
       break
     }
-    const leaf = applySearchMove(state, reply)
+    const leaf = applySearchMove(state, reply, 'if-third')
     context.nodes += 1
-    let score = evaluatePosition(leaf, context.rootSide)
+    let score =
+      leaf.status === 'playing'
+        ? evaluatePosition(leaf, context.rootSide)
+        : terminalScore(leaf.winner, context.rootSide, 2)
 
     // 中国象棋将死与困毙均为当前方失败；短路探测避免枚举整棵下一层。
-    if (!hasAnyLegalMove(leaf)) {
+    if (leaf.status === 'playing' && !hasAnyLegalMove(leaf)) {
       score = terminalScore(
         oppositeSide(leaf.sideToMove),
         context.rootSide,
@@ -220,17 +239,15 @@ function scoreHardCandidate(
   }
 }
 
-function applySearchMove(state: GameState, move: Move): GameState {
-  const pieces = simulateMove(state.pieces, move)
-  const sideToMove = oppositeSide(state.sideToMove)
-  return {
-    pieces,
-    sideToMove,
-    history: [],
-    inCheck: isInCheck(pieces, sideToMove),
-    winner: null,
-    status: 'playing',
-  }
+function applySearchMove(
+  state: GameState,
+  move: Move,
+  chaseAnalysis: 'if-repeated' | 'if-third',
+): GameState {
+  return applyKnownLegalMove(state, move, {
+    chaseAnalysis,
+    deferBoardTerminal: true,
+  })
 }
 
 function evaluatePosition(state: GameState, rootSide: Side): number {
@@ -293,7 +310,11 @@ function selectEasyCandidate(
 ): Candidate | undefined {
   const mate = candidates.find((candidate) => candidate.score >= AI_MATE_SCORE - 8)
   if (mate) return mate
-  const pool = candidates.slice(0, Math.min(4, candidates.length))
+  const nonLosing = candidates.filter(
+    (candidate) => candidate.score > -AI_MATE_SCORE + 8,
+  )
+  const source = nonLosing.length > 0 ? nonLosing : candidates
+  const pool = source.slice(0, Math.min(4, source.length))
   if (pool.length === 0) return undefined
   const seed = mixSeed(explicitSeed ?? 0x9e3779b9, hashPosition(state))
   return pool[seed % pool.length]
@@ -331,14 +352,8 @@ function cloneMove(move: Move): Move {
 }
 
 function hashPosition(state: GameState): number {
-  const canonical = state.pieces
-    .map(
-      (piece) =>
-        `${piece.id}:${piece.side}:${piece.kind}:${piece.file}:${piece.rank}:${piece.captured ? 1 : 0}`,
-    )
-    .sort()
-    .join('|')
-  let hash = state.sideToMove === 'red' ? 0x811c9dc5 : 0x811c9dc5 ^ 0x9e3779b9
+  const canonical = positionKey(state.pieces, state.sideToMove)
+  let hash = 0x811c9dc5
   for (let index = 0; index < canonical.length; index += 1) {
     hash ^= canonical.charCodeAt(index)
     hash = Math.imul(hash, 0x01000193)

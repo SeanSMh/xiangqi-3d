@@ -1,4 +1,8 @@
 import { createInitialState, pieceAt, pieceLabel } from '../engine/board'
+import {
+  explainIllegalMove,
+  type IllegalMoveReason,
+} from '../engine/illegalMove'
 import { generateLegalMoves, isInsideBoard } from '../engine/moves'
 import type {
   BoardCoord,
@@ -11,7 +15,15 @@ import { GameTimeline, type TimelineSnapshot } from './timeline'
 
 export type InteractionResult =
   | { type: 'moved'; move: Move }
-  | { type: 'selected' | 'cleared' | 'ignored' }
+  | { type: 'selected' }
+  | {
+      type: 'cleared'
+      reason: IllegalMoveReason | 'no-selection' | 'cancelled'
+    }
+  | {
+      type: 'ignored'
+      reason: 'reviewing' | 'terminal' | 'outside-board' | 'illegal'
+    }
 
 export type CommitMoveResult =
   | { type: 'moved'; move: Move }
@@ -110,12 +122,14 @@ export class GameController {
 
   handleSquare(file: number, rank: number): InteractionResult {
     const state = this.getState()
-    if (
-      this.timeline.getSnapshot().isReviewing ||
-      state.status !== 'playing' ||
-      !isInsideBoard(file, rank)
-    ) {
-      return { type: 'ignored' }
+    if (this.timeline.getSnapshot().isReviewing) {
+      return { type: 'ignored', reason: 'reviewing' }
+    }
+    if (state.status !== 'playing') {
+      return { type: 'ignored', reason: 'terminal' }
+    }
+    if (!isInsideBoard(file, rank)) {
+      return { type: 'ignored', reason: 'outside-board' }
     }
 
     const target = pieceAt(state.pieces, file, rank)
@@ -130,12 +144,12 @@ export class GameController {
         const committed = this.tryCommitMove(move)
         return committed.type === 'moved'
           ? committed
-          : { type: 'ignored' }
+          : { type: 'ignored', reason: committed.reason }
       }
 
       if (target?.id === selected.id) {
         this.clearSelection()
-        return { type: 'cleared' }
+        return { type: 'cleared', reason: 'cancelled' }
       }
     }
 
@@ -144,8 +158,13 @@ export class GameController {
       return { type: 'selected' }
     }
 
+    const reason = selected
+      ? explainIllegalMove(state, selected, { file, rank }) ?? 'illegal-pattern'
+      : target
+        ? 'wrong-side'
+        : 'no-selection'
     this.clearSelection()
-    return { type: 'cleared' }
+    return { type: 'cleared', reason }
   }
 
   reset(): void {

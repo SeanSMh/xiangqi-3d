@@ -5,7 +5,10 @@
 import { AnimationDirector } from './animation/animationDirector'
 import { pieceAt, pieceLabel } from './engine/board'
 import { AiCoordinator } from './game/aiCoordinator'
-import { GameController } from './game/controller'
+import {
+  GameController,
+  type InteractionResult,
+} from './game/controller'
 import {
   DEFAULT_MATCH_CONFIG,
   AI_SIDE,
@@ -15,6 +18,11 @@ import {
 } from './game/match'
 import { BoardScene } from './scene/boardScene'
 import type { GameState, Move } from './types/xiangqi'
+import {
+  deriveGamePrompt,
+  type GamePrompt,
+  type InteractionFeedback,
+} from './ui/gamePrompt'
 import { Hud } from './ui/hud'
 
 const appElement = document.querySelector<HTMLDivElement>('#app')
@@ -22,6 +30,7 @@ if (!appElement) throw new Error('#app not found')
 const app: HTMLDivElement = appElement
 
 const REPLAY_STEP_MS = 700
+const INTERACTION_FEEDBACK_MS = 1800
 const controller = new GameController()
 const scene = new BoardScene(app)
 const animations = new AnimationDirector(scene)
@@ -29,6 +38,7 @@ let matchConfig: MatchConfig = { ...DEFAULT_MATCH_CONFIG }
 const hud = new Hud(app, {
   onToggleMatchSettings: () => toggleMatchSettings(),
   onApplyMatchConfig: (config) => applyMatchConfig(config),
+  onToggleRuleHelp: () => toggleRuleHelp(),
   onRestart: () => restartGame(),
   onToggleFullscreen: () => void toggleFullscreen(),
   onUndo: () => undoLastMove(),
@@ -42,6 +52,8 @@ const hud = new Hud(app, {
 })
 const aiCoordinator = new AiCoordinator(undefined, () => syncUiAndMarkers())
 let simulationTime = 0
+let interactionFeedback: InteractionFeedback | null = null
+let interactionFeedbackExpiresAt = 0
 let replayPlaying = false
 let replayElapsedMs = 0
 let manualClock =
@@ -53,6 +65,9 @@ function syncUiAndMarkers(): void {
   const timeline = controller.getTimelineSnapshot()
   const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
   const inputLocked = isBoardInputLocked(state)
+  const selected = inputLocked ? undefined : controller.getSelectedPiece()
+  const legalCount = inputLocked ? 0 : controller.getLegalMoves().length
+  const prompt = createCurrentPrompt(state, selected, legalCount)
   scene.setInteractionState(
     state,
     inputLocked ? null : controller.getSelectedId(),
@@ -60,8 +75,8 @@ function syncUiAndMarkers(): void {
   )
   hud.update(
     state,
-    inputLocked ? undefined : controller.getSelectedPiece(),
-    inputLocked ? 0 : controller.getLegalMoves().length,
+    selected,
+    legalCount,
     {
       animationBusy: animations.isBusy,
       replayPlaying,
@@ -69,6 +84,7 @@ function syncUiAndMarkers(): void {
       moveLog: controller.getMoveLog(),
       matchConfig,
       ai,
+      prompt,
     },
   )
   scene.renderer.domElement.setAttribute(
@@ -87,6 +103,7 @@ function restartGame(): void {
   stopReplay()
   controller.reset()
   simulationTime = 0
+  clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
@@ -105,6 +122,7 @@ function toggleMatchSettings(): void {
   if (opening && hud.isHistoryOpen) {
     hud.setHistoryOpen(false)
   }
+  clearInteractionFeedback()
   hud.setMatchSettingsOpen(opening, matchConfig)
   syncUiAndMarkers()
 }
@@ -115,12 +133,39 @@ function applyMatchConfig(config: MatchConfig): void {
   restartGame()
 }
 
+function toggleRuleHelp(): void {
+  const opening = !hud.isRuleHelpOpen
+  if (
+    opening &&
+    (animations.isBusy ||
+      replayPlaying ||
+      controller.getTimelineSnapshot().isReviewing ||
+      aiCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
+  ) {
+    return
+  }
+  if (opening && hud.isHistoryOpen) {
+    hud.setHistoryOpen(false)
+  }
+  clearInteractionFeedback()
+  hud.setRuleHelpOpen(opening)
+  syncUiAndMarkers()
+}
+
 function advanceSimulation(milliseconds: number): void {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return
   simulationTime += milliseconds
   const animationWasBusy = animations.isBusy
   let changed = animations.advance(milliseconds)
+  if (
+    interactionFeedback &&
+    simulationTime >= interactionFeedbackExpiresAt
+  ) {
+    clearInteractionFeedback()
+    changed = true
+  }
   if (animationWasBusy && !animations.isBusy) {
+    clearInteractionFeedback()
     aiCoordinator.finishAnimation()
     changed = true
   }
@@ -157,7 +202,8 @@ function advanceAi(milliseconds: number): boolean {
     !replayPlaying &&
     !timeline.isReviewing &&
     !hud.isHistoryOpen &&
-    !hud.isMatchSettingsOpen
+    !hud.isMatchSettingsOpen &&
+    !hud.isRuleHelpOpen
 
   if (!eligible) return false
   if (ai.phase === 'error' || ai.phase === 'animating') return false
@@ -181,7 +227,8 @@ function advanceAi(milliseconds: number): boolean {
     animations.isBusy ||
     replayPlaying ||
     hud.isHistoryOpen ||
-    hud.isMatchSettingsOpen
+    hud.isMatchSettingsOpen ||
+    hud.isRuleHelpOpen
   ) {
     aiCoordinator.cancel()
     return true
@@ -208,11 +255,13 @@ function undoLastMove(): void {
         ? 1
         : 0
   if (undone === 0) return
+  clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
 
 function toggleHistory(): void {
+  clearInteractionFeedback()
   const opening = !hud.isHistoryOpen
   if (opening) aiCoordinator.cancel()
   if (!opening) {
@@ -230,6 +279,7 @@ function seekReplay(ply: number): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.seekReplay(ply)) return
+  clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
@@ -243,6 +293,7 @@ function replayPrevious(): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.stepReplayBackward()) return
+  clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
@@ -251,6 +302,7 @@ function replayNext(): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.stepReplayForward()) return
+  clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
 }
@@ -259,6 +311,7 @@ function returnToLive(): void {
   if (animations.isBusy) return
   aiCoordinator.cancel()
   stopReplay()
+  clearInteractionFeedback()
   if (controller.returnToLive()) {
     animations.cancelAndSnap(controller.getState())
   }
@@ -270,11 +323,13 @@ function toggleReplay(): void {
   if (animations.isBusy || !timeline.canReplay) return
   if (replayPlaying) {
     stopReplay()
+    clearInteractionFeedback()
     syncUiAndMarkers()
     return
   }
 
   aiCoordinator.cancel()
+  clearInteractionFeedback()
   hud.setHistoryOpen(true)
   if (!timeline.isReviewing) {
     controller.seekReplay(timeline.firstAvailablePly)
@@ -288,6 +343,7 @@ function toggleReplay(): void {
 function stopReplay(): void {
   replayPlaying = false
   replayElapsedMs = 0
+  clearInteractionFeedback()
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -303,15 +359,33 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 scene.renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || isBoardInputLocked(controller.getState())) {
+  if (event.button !== 0) {
+    return
+  }
+  const state = controller.getState()
+  const lockedReason = getInputLockedReason(state)
+  if (lockedReason) {
+    const feedback = feedbackForInputLock(lockedReason)
+    if (feedback) showInteractionFeedback(feedback)
     return
   }
   const square = scene.pickSquare(event.clientX, event.clientY)
-  if (!square) return
+  if (!square) {
+    showInteractionFeedback({ reason: 'outside-board' })
+    return
+  }
 
+  const selectedBefore = controller.getSelectedPiece()
   const result = controller.handleSquare(square.file, square.rank)
   if (result.type !== 'moved') {
-    snapEntireView()
+    scene.snapTo(controller.getState())
+    const feedback = feedbackForInteraction(result, selectedBefore)
+    if (feedback) {
+      showInteractionFeedback(feedback)
+    } else {
+      clearInteractionFeedback()
+      syncUiAndMarkers()
+    }
     return
   }
 
@@ -319,6 +393,7 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
 })
 
 function startMoveAnimation(move: Move): void {
+  clearInteractionFeedback()
   const committedState = controller.getState()
   // 不在此处 snap：旧 Mesh 必须保留给移动和受击退场演出。
   scene.setInteractionState(committedState, null, [])
@@ -331,22 +406,109 @@ function startMoveAnimation(move: Move): void {
 }
 
 function isBoardInputLocked(state: GameState): boolean {
+  return getInputLockedReason(state) !== null
+}
+
+type InputLockedReason =
+  | 'animation'
+  | 'replay-playing'
+  | 'replay-view'
+  | 'match-settings'
+  | 'rule-help'
+  | 'terminal'
+  | 'ai-error'
+  | 'ai-thinking'
+  | 'ai-paused-history'
+  | 'ai-turn'
+
+function getInputLockedReason(state: GameState): InputLockedReason | null {
   const timeline = controller.getTimelineSnapshot()
-  return (
-    animations.isBusy ||
-    replayPlaying ||
-    timeline.isReviewing ||
-    hud.isMatchSettingsOpen ||
-    isAiTurn(matchConfig, state)
-  )
+  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  if (animations.isBusy) return 'animation'
+  if (replayPlaying) return 'replay-playing'
+  if (timeline.isReviewing) return 'replay-view'
+  if (hud.isMatchSettingsOpen) return 'match-settings'
+  if (hud.isRuleHelpOpen) return 'rule-help'
+  if (state.status !== 'playing') return 'terminal'
+  if (ai.phase === 'error') return 'ai-error'
+  if (hud.isHistoryOpen && isAiTurn(matchConfig, state)) {
+    return 'ai-paused-history'
+  }
+  if (ai.phase === 'thinking') return 'ai-thinking'
+  if (isAiTurn(matchConfig, state)) return 'ai-turn'
+  return null
+}
+
+function feedbackForInputLock(
+  reason: InputLockedReason,
+): InteractionFeedback | null {
+  switch (reason) {
+    case 'animation':
+      return { reason: 'locked-animation' }
+    case 'replay-playing':
+    case 'replay-view':
+      return { reason: 'locked-replay' }
+    case 'match-settings':
+    case 'rule-help':
+      return { reason: 'locked-settings' }
+    case 'terminal':
+      return { reason: 'terminal' }
+    case 'ai-thinking':
+    case 'ai-paused-history':
+    case 'ai-turn':
+      return { reason: 'locked-ai' }
+    case 'ai-error':
+      return null
+  }
+}
+
+function feedbackForInteraction(
+  result: Exclude<InteractionResult, { type: 'moved' }>,
+  selected: ReturnType<GameController['getSelectedPiece']>,
+): InteractionFeedback | null {
+  if (result.type === 'selected') return null
+  if (result.type === 'cleared') {
+    if (result.reason === 'cancelled') return null
+    return {
+      reason: result.reason,
+      ...(selected
+        ? { piece: { kind: selected.kind, side: selected.side } }
+        : {}),
+    }
+  }
+
+  switch (result.reason) {
+    case 'reviewing':
+      return { reason: 'locked-replay' }
+    case 'terminal':
+      return { reason: 'terminal' }
+    case 'outside-board':
+      return { reason: 'outside-board' }
+    case 'illegal':
+      return { reason: 'illegal-pattern' }
+  }
 }
 
 window.addEventListener('keydown', (event) => {
-  if (event.repeat || event.defaultPrevented || isEditableTarget(event.target)) {
+  if (event.repeat || event.defaultPrevented) {
     return
   }
-  if (hud.isMatchSettingsOpen) return
   const key = event.key.toLowerCase()
+  if (hud.isMatchSettingsOpen) {
+    if (key === 'm' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault()
+      toggleMatchSettings()
+    }
+    return
+  }
+  if (isEditableTarget(event.target)) return
+  if (hud.isRuleHelpOpen) {
+    if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault()
+      toggleRuleHelp()
+    }
+    return
+  }
   const plainUndo =
     key === 'u' && !event.metaKey && !event.ctrlKey && !event.altKey
   const undoShortcut =
@@ -370,6 +532,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'm') {
     event.preventDefault()
     toggleMatchSettings()
+    return
+  }
+  if (event.key === '?') {
+    event.preventDefault()
+    toggleRuleHelp()
     return
   }
   if (key === 'h') {
@@ -410,6 +577,13 @@ window.render_game_to_text = () => {
   const lastMove = state.history.at(-1)
   const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
   const inputLocked = isBoardInputLocked(state)
+  const effectiveSelected = inputLocked ? undefined : selected
+  const effectiveLegalMoves = inputLocked ? [] : controller.getLegalMoves()
+  const prompt = createCurrentPrompt(
+    state,
+    effectiveSelected,
+    effectiveLegalMoves.length,
+  )
   const historyWindowStart = Math.max(
     0,
     Math.min(
@@ -425,29 +599,25 @@ window.render_game_to_text = () => {
       sideToMove: state.sideToMove,
       inCheck: state.inCheck,
       winner: state.winner,
+      outcome: state.outcome ?? null,
+      prompt,
       fullscreen: Boolean(document.fullscreenElement),
       inputLocked,
-      inputLockedReason: animations.isBusy
-        ? 'animation'
-        : replayPlaying
-          ? 'replay-playing'
-          : timeline.isReviewing
-            ? 'replay-view'
-            : hud.isMatchSettingsOpen
-              ? 'match-settings'
-              : ai.phase === 'error'
-                ? 'ai-error'
-                : ai.phase === 'thinking'
-                  ? 'ai-thinking'
-                  : isAiTurn(matchConfig, state)
-                    ? 'ai-turn'
-                    : null,
-      boardInputEnabled: state.status === 'playing' && !inputLocked,
+      inputLockedReason: getInputLockedReason(state),
+      boardInputEnabled: !inputLocked,
+      rules: {
+        profile: state.ruleState?.ruleset ?? 'program-competition-2023',
+        positionOccurrences:
+          state.ruleState?.currentPositionOccurrences ?? 1,
+        recordedFrames: state.ruleState?.frames.length ?? 0,
+        naturalLimit: state.ruleState?.naturalLimit ?? null,
+      },
       match: {
         ...matchConfig,
         humanSide: HUMAN_SIDE,
         aiSide: AI_SIDE,
         settingsOpen: hud.isMatchSettingsOpen,
+        ruleHelpOpen: hud.isRuleHelpOpen,
       },
       ai,
       animation: animations.getSnapshot(),
@@ -472,16 +642,16 @@ window.render_game_to_text = () => {
       },
       manualClock,
       ply: timeline.cursorPly,
-      selected: selected
+      selected: effectiveSelected
         ? {
-            id: selected.id,
-            label: pieceLabel(selected.kind, selected.side),
-            side: selected.side,
-            file: selected.file,
-            rank: selected.rank,
+            id: effectiveSelected.id,
+            label: pieceLabel(effectiveSelected.kind, effectiveSelected.side),
+            side: effectiveSelected.side,
+            file: effectiveSelected.file,
+            rank: effectiveSelected.rank,
           }
         : null,
-      legalTargets: controller.getLegalMoves().map((move) => ({
+      legalTargets: effectiveLegalMoves.map((move) => ({
         file: move.to.file,
         rank: move.to.rank,
         capture: Boolean(move.capturedId),
@@ -501,10 +671,49 @@ window.render_game_to_text = () => {
           }
         : null,
       simulationTime,
+      interactionFeedback,
     },
     null,
     2,
   )
+}
+
+function createCurrentPrompt(
+  state: GameState,
+  selected: ReturnType<GameController['getSelectedPiece']>,
+  legalCount: number,
+): GamePrompt {
+  const timeline = controller.getTimelineSnapshot()
+  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  return deriveGamePrompt({
+    state,
+    selected,
+    legalCount,
+    animationBusy: animations.isBusy,
+    replayPlaying,
+    timeline,
+    matchMode: matchConfig.mode,
+    aiTurn: isAiTurn(matchConfig, state),
+    historyOpen: hud.isHistoryOpen,
+    ai,
+    activeDialog: hud.isMatchSettingsOpen
+      ? 'match-settings'
+      : hud.isRuleHelpOpen
+        ? 'rule-help'
+        : null,
+    interaction: interactionFeedback,
+  })
+}
+
+function clearInteractionFeedback(): void {
+  interactionFeedback = null
+  interactionFeedbackExpiresAt = 0
+}
+
+function showInteractionFeedback(feedback: InteractionFeedback): void {
+  interactionFeedback = feedback
+  interactionFeedbackExpiresAt = simulationTime + INTERACTION_FEEDBACK_MS
+  syncUiAndMarkers()
 }
 
 window.advanceTime = (milliseconds: number) => {

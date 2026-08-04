@@ -61,6 +61,24 @@ describe('GameController', () => {
     expect(controller.getSelectedId()).toBeNull()
   })
 
+  it('返回可直接显示的选边、空点与棋子规则原因', () => {
+    const controller = new GameController()
+    expect(controller.handleSquare(0, 6)).toEqual({
+      type: 'cleared',
+      reason: 'wrong-side',
+    })
+    expect(controller.handleSquare(4, 4)).toEqual({
+      type: 'cleared',
+      reason: 'no-selection',
+    })
+
+    expect(controller.handleSquare(1, 0)).toEqual({ type: 'selected' })
+    expect(controller.handleSquare(3, 1)).toEqual({
+      type: 'cleared',
+      reason: 'horse-leg-blocked',
+    })
+  })
+
   it('吃子由规则引擎结算且终局忽略输入', () => {
     const pieces: Piece[] = [
       { id: 'rk', kind: 'king', side: 'red', file: 4, rank: 0 },
@@ -92,7 +110,10 @@ describe('GameController', () => {
       status: 'checkmate',
       winner: 'red',
     })
-    expect(terminal.handleSquare(4, 9).type).toBe('ignored')
+    expect(terminal.handleSquare(4, 9)).toEqual({
+      type: 'ignored',
+      reason: 'terminal',
+    })
   })
 
   it('重开恢复标准局面', () => {
