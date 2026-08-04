@@ -13,21 +13,34 @@ const appElement = document.querySelector<HTMLDivElement>('#app')
 if (!appElement) throw new Error('#app not found')
 const app: HTMLDivElement = appElement
 
+const REPLAY_STEP_MS = 700
 const controller = new GameController()
 const scene = new BoardScene(app)
 const animations = new AnimationDirector(scene)
 const hud = new Hud(app, {
   onRestart: () => restartGame(),
   onToggleFullscreen: () => void toggleFullscreen(),
+  onUndo: () => undoLastMove(),
+  onToggleHistory: () => toggleHistory(),
+  onSeekReplay: (ply) => seekReplay(ply),
+  onReplayFirst: () => replayFirst(),
+  onReplayPrevious: () => replayPrevious(),
+  onToggleReplay: () => toggleReplay(),
+  onReplayNext: () => replayNext(),
+  onReturnToLive: () => returnToLive(),
 })
 let simulationTime = 0
+let replayPlaying = false
+let replayElapsedMs = 0
 let manualClock =
   new URLSearchParams(window.location.search).get('clock') === 'manual'
 let lastFrameTime = performance.now()
 
 function syncUiAndMarkers(): void {
   const state = controller.getState()
-  const inputLocked = animations.isBusy
+  const timeline = controller.getTimelineSnapshot()
+  const inputLocked =
+    animations.isBusy || replayPlaying || timeline.isReviewing
   scene.setInteractionState(
     state,
     inputLocked ? null : controller.getSelectedId(),
@@ -37,7 +50,12 @@ function syncUiAndMarkers(): void {
     state,
     inputLocked ? undefined : controller.getSelectedPiece(),
     inputLocked ? 0 : controller.getLegalMoves().length,
-    inputLocked,
+    {
+      animationBusy: animations.isBusy,
+      replayPlaying,
+      timeline,
+      moveLog: controller.getMoveLog(),
+    },
   )
 }
 
@@ -47,6 +65,7 @@ function snapEntireView(): void {
 }
 
 function restartGame(): void {
+  stopReplay()
   controller.reset()
   simulationTime = 0
   animations.cancelAndSnap(controller.getState())
@@ -56,7 +75,103 @@ function restartGame(): void {
 function advanceSimulation(milliseconds: number): void {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return
   simulationTime += milliseconds
-  if (animations.advance(milliseconds)) syncUiAndMarkers()
+  let changed = animations.advance(milliseconds)
+
+  if (replayPlaying) {
+    replayElapsedMs += milliseconds
+    while (replayPlaying && replayElapsedMs >= REPLAY_STEP_MS) {
+      replayElapsedMs -= REPLAY_STEP_MS
+      if (controller.stepReplayForward()) {
+        scene.snapTo(controller.getState())
+        changed = true
+      }
+      if (!controller.getTimelineSnapshot().canStepForward) {
+        stopReplay()
+        changed = true
+      }
+    }
+  }
+
+  if (changed) syncUiAndMarkers()
+}
+
+function undoLastMove(): void {
+  if (!controller.undoLastMove()) return
+  stopReplay()
+  animations.cancelAndSnap(controller.getState())
+  syncUiAndMarkers()
+}
+
+function toggleHistory(): void {
+  const opening = !hud.isHistoryOpen
+  if (!opening) {
+    stopReplay()
+    if (!animations.isBusy) {
+      controller.returnToLive()
+      animations.cancelAndSnap(controller.getState())
+    }
+  }
+  hud.setHistoryOpen(opening)
+  syncUiAndMarkers()
+}
+
+function seekReplay(ply: number): void {
+  if (animations.isBusy || replayPlaying) return
+  if (!controller.seekReplay(ply)) return
+  animations.cancelAndSnap(controller.getState())
+  syncUiAndMarkers()
+}
+
+function replayFirst(): void {
+  const firstPly = controller.getTimelineSnapshot().firstAvailablePly
+  seekReplay(firstPly)
+}
+
+function replayPrevious(): void {
+  if (animations.isBusy || replayPlaying) return
+  if (!controller.stepReplayBackward()) return
+  animations.cancelAndSnap(controller.getState())
+  syncUiAndMarkers()
+}
+
+function replayNext(): void {
+  if (animations.isBusy || replayPlaying) return
+  if (!controller.stepReplayForward()) return
+  animations.cancelAndSnap(controller.getState())
+  syncUiAndMarkers()
+}
+
+function returnToLive(): void {
+  if (animations.isBusy) return
+  stopReplay()
+  if (controller.returnToLive()) {
+    animations.cancelAndSnap(controller.getState())
+  }
+  syncUiAndMarkers()
+}
+
+function toggleReplay(): void {
+  const timeline = controller.getTimelineSnapshot()
+  if (animations.isBusy || !timeline.canReplay) return
+  if (replayPlaying) {
+    stopReplay()
+    syncUiAndMarkers()
+    return
+  }
+
+  hud.setHistoryOpen(true)
+  if (!timeline.isReviewing) {
+    controller.seekReplay(timeline.firstAvailablePly)
+  }
+  animations.cancelAndSnap(controller.getState())
+  replayPlaying = true
+  replayElapsedMs = 0
+  syncUiAndMarkers()
+}
+
+function stopReplay(): void {
+  replayPlaying = false
+  replayElapsedMs = 0
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -72,7 +187,15 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 scene.renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0 || animations.isBusy) return
+  const timeline = controller.getTimelineSnapshot()
+  if (
+    event.button !== 0 ||
+    animations.isBusy ||
+    replayPlaying ||
+    timeline.isReviewing
+  ) {
+    return
+  }
   const square = scene.pickSquare(event.clientX, event.clientY)
   if (!square) return
 
@@ -93,15 +216,75 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
 })
 
 window.addEventListener('keydown', (event) => {
-  if (event.repeat) return
-  if (event.key.toLowerCase() === 'r') restartGame()
-  if (event.key.toLowerCase() === 'f') void toggleFullscreen()
+  if (event.repeat || event.defaultPrevented || isEditableTarget(event.target)) {
+    return
+  }
+  const key = event.key.toLowerCase()
+  const plainUndo =
+    key === 'u' && !event.metaKey && !event.ctrlKey && !event.altKey
+  const undoShortcut =
+    key === 'z' && (event.metaKey || event.ctrlKey) && !event.altKey
+  if (plainUndo || undoShortcut) {
+    event.preventDefault()
+    undoLastMove()
+    return
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (key === 'r') {
+    event.preventDefault()
+    restartGame()
+    return
+  }
+  if (key === 'f') {
+    event.preventDefault()
+    void toggleFullscreen()
+    return
+  }
+  if (key === 'h') {
+    event.preventDefault()
+    toggleHistory()
+    return
+  }
+  if (!hud.isHistoryOpen) return
+  if (
+    (event.key === ' ' || event.key === 'Enter') &&
+    event.target instanceof HTMLButtonElement
+  ) {
+    return
+  }
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    replayPrevious()
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    replayNext()
+  } else if (event.key === 'Home') {
+    event.preventDefault()
+    replayFirst()
+  } else if (event.key === 'End' || event.key === 'Enter') {
+    event.preventDefault()
+    returnToLive()
+  } else if (event.key === ' ') {
+    event.preventDefault()
+    toggleReplay()
+  }
 })
 
 window.render_game_to_text = () => {
   const state = controller.getState()
+  const timeline = controller.getTimelineSnapshot()
+  const moveLog = controller.getMoveLog()
   const selected = controller.getSelectedPiece()
   const lastMove = state.history.at(-1)
+  const inputLocked =
+    animations.isBusy || replayPlaying || timeline.isReviewing
+  const historyWindowStart = Math.max(
+    0,
+    Math.min(
+      Math.max(0, timeline.cursorPly - 4),
+      Math.max(0, moveLog.length - 8),
+    ),
+  )
   return JSON.stringify(
     {
       coordinateSystem:
@@ -111,11 +294,37 @@ window.render_game_to_text = () => {
       inCheck: state.inCheck,
       winner: state.winner,
       fullscreen: Boolean(document.fullscreenElement),
-      inputLocked: animations.isBusy,
+      inputLocked,
+      inputLockedReason: animations.isBusy
+        ? 'animation'
+        : replayPlaying
+          ? 'replay-playing'
+          : timeline.isReviewing
+            ? 'replay-view'
+            : null,
+      boardInputEnabled: state.status === 'playing' && !inputLocked,
       animation: animations.getSnapshot(),
       presentation: scene.getPresentationSnapshot(state),
+      timeline: {
+        mode: timeline.isReviewing ? 'replay' : 'live',
+        ...timeline,
+      },
+      replay: {
+        panelOpen: hud.isHistoryOpen,
+        playing: replayPlaying,
+        stepMs: REPLAY_STEP_MS,
+      },
+      history: {
+        coordinateSystem:
+          'text 使用 1-based (路,横线)；from/to 结构字段保留内部 0-based 坐标',
+        totalPlies: timeline.livePly,
+        visibleEntries: moveLog.slice(
+          historyWindowStart,
+          historyWindowStart + 8,
+        ),
+      },
       manualClock,
-      ply: state.history.length,
+      ply: timeline.cursorPly,
       selected: selected
         ? {
             id: selected.id,
@@ -177,6 +386,13 @@ function describeBoard(state: GameState): string[] {
   return rows
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return (
+    target.matches('input, textarea, select') || target.isContentEditable
+  )
+}
+
 snapEntireView()
 
 function loop(now: number): void {
@@ -189,5 +405,5 @@ function loop(now: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 角色演出已就绪：production v3 共用剪影由阵营 Shader 着色。',
+  '[xiangqi-3d] 棋谱时间线已就绪：支持单步悔棋、逐手定位与确定性自动回放。',
 )

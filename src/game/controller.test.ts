@@ -22,6 +22,36 @@ describe('GameController', () => {
     expect(controller.getSelectedId()).toBeNull()
   })
 
+  it('生成结构化坐标棋谱，并能逐手回放后返回实时局面', () => {
+    const controller = new GameController()
+    controller.handleSquare(0, 3)
+    controller.handleSquare(0, 4)
+    controller.handleSquare(0, 6)
+    controller.handleSquare(0, 5)
+
+    expect(controller.getMoveLog().map((entry) => entry.text)).toEqual([
+      '红兵 (1,4) → (1,5)',
+      '黑卒 (1,7) → (1,6)',
+    ])
+    expect(controller.getTimelineSnapshot()).toMatchObject({
+      cursorPly: 2,
+      livePly: 2,
+      isReviewing: false,
+    })
+
+    expect(controller.stepReplayBackward()).toBe(true)
+    expect(controller.getState().history).toHaveLength(1)
+    expect(controller.getState().sideToMove).toBe('black')
+    expect(controller.handleSquare(2, 6).type).toBe('ignored')
+    expect(controller.getSelectedId()).toBeNull()
+
+    expect(controller.seekReplay(0)).toBe(true)
+    expect(controller.getState().history).toHaveLength(0)
+    expect(controller.stepReplayForward()).toBe(true)
+    expect(controller.returnToLive()).toBe(true)
+    expect(controller.getState().history).toHaveLength(2)
+  })
+
   it('可切换己方选择，点击空白或对方非法目标会清空', () => {
     const controller = new GameController()
     controller.handleSquare(0, 3)
@@ -52,8 +82,13 @@ describe('GameController', () => {
     expect(controller.handleSquare(0, 3).type).toBe('moved')
     expect(controller.getState().pieces.find((piece) => piece.id === 'target')?.captured).toBe(true)
 
+    expect(controller.undoLastMove()).toBe(true)
+    expect(controller.getState().pieces.find((piece) => piece.id === 'rook')).toMatchObject({ file: 0, rank: 0 })
+    expect(controller.getState().pieces.find((piece) => piece.id === 'target')?.captured).toBeUndefined()
+    expect(controller.getState().history).toHaveLength(0)
+
     const terminal = new GameController({
-      ...controller.getState(),
+      ...state,
       status: 'checkmate',
       winner: 'red',
     })
@@ -68,5 +103,6 @@ describe('GameController', () => {
     expect(controller.getState().pieces).toHaveLength(32)
     expect(controller.getState().sideToMove).toBe('red')
     expect(controller.getState().history).toHaveLength(0)
+    expect(controller.getTimelineSnapshot().canUndo).toBe(false)
   })
 })
