@@ -1,7 +1,110 @@
 import { describe, expect, it } from 'vitest'
 import { createInitialState } from '../engine/board'
 import type { PieceKind, Side } from '../types/xiangqi'
-import { createSpoilsViewModel } from './hud'
+import { createCompactPromptLabel, createSpoilsViewModel } from './hud'
+import { resolveHudLayout } from './responsiveHud'
+
+describe('resolveHudLayout', () => {
+  it.each([
+    [375, 667, 'compact', 150, 142, 8, 8],
+    [390, 844, 'compact', 150, 142, 8, 8],
+    [768, 1024, 'portrait', 160, 92, 12, 12],
+    [1280, 720, 'desktop', 76, 76, 16, 16],
+  ] as const)(
+    '%d×%d 选择 %s 布局并暴露稳定安全区',
+    (
+      width,
+      height,
+      mode,
+      topReservedPx,
+      bottomReservedPx,
+      leftReservedPx,
+      rightReservedPx,
+    ) => {
+      expect(resolveHudLayout(width, height)).toMatchObject({
+        mode,
+        orientation: height > width ? 'portrait' : 'landscape',
+        topReservedPx,
+        bottomReservedPx,
+        leftReservedPx,
+        rightReservedPx,
+      })
+    },
+  )
+
+  it.each([
+    [844, 390],
+    [667, 375],
+    [600, 360],
+    [568, 320],
+  ] as const)('%d×%d 使用左右 side-rail 并保留中央棋盘', (width, height) => {
+    expect(resolveHudLayout(width, height)).toMatchObject({
+      mode: 'side-rail',
+      orientation: 'landscape',
+      topReservedPx: 8,
+      bottomReservedPx: 8,
+      leftReservedPx: 184,
+      rightReservedPx: 124,
+      minimumTouchTargetPx: 44,
+    })
+  })
+
+  it('非法尺寸安全降级', () => {
+    expect(resolveHudLayout(Number.NaN, 0)).toMatchObject({
+      mode: 'compact',
+      orientation: 'landscape',
+    })
+  })
+})
+
+describe('createCompactPromptLabel', () => {
+  it.each(['turn-local', 'turn-human'] as const)(
+    '%s 用一行短指令替代重复的行棋方标题',
+    (code) => {
+      expect(
+        createCompactPromptLabel({
+          code,
+          tone: 'info',
+          title: code === 'turn-local' ? '红方行棋' : '轮到你（红方）',
+          detail: '点选棋子，再点亮起的合法落点',
+        }),
+      ).toBe('点棋子，再点高亮落点')
+    },
+  )
+
+  it('选中棋子时保留棋子与合法落点数量', () => {
+    expect(
+      createCompactPromptLabel({
+        code: 'piece-selected',
+        tone: 'info',
+        title: '已选红马',
+        detail: '2 个合法落点',
+        action: '点击亮起的落点行棋',
+      }),
+    ).toBe('已选红马 · 2 个合法落点')
+  })
+
+  it('无合法落点时给出改选动作，异常提示保持权威标题', () => {
+    expect(
+      createCompactPromptLabel({
+        code: 'piece-selected',
+        tone: 'warning',
+        title: '已选红马',
+        detail: '当前没有合法落点',
+        action: '请选择其他棋子',
+      }),
+    ).toBe('已选红马 · 请选择其他棋子')
+    expect(
+      createCompactPromptLabel({
+        code: 'repetition-warning',
+        tone: 'warning',
+        title: '循环警告',
+        detail: '局面已第二次出现；再次重复将触发循环裁决',
+        action: '请考虑变着',
+      }),
+    ).toBe('循环警告')
+  })
+})
 
 describe('createSpoilsViewModel', () => {
   it('初局按双方所得战果分组且均为空', () => {

@@ -44,7 +44,15 @@ open /Users/bril/projects/xiangqi-3d/resources/reference/index.html
 | `art/production/silhouettes/pair_character_silhouette_v3.png` | 全彩角色与剪影成对校对图 |
 | `art/production/**/archive_*` | 历史错位或失败资源，只供追溯，禁止进入运行时 |
 
-运行时副本位于 `public/assets/characters/` 与 `public/assets/silhouettes/`。代码只从 `public/assets/` 加载；修改定稿后需重新复制并核对尺寸、Alpha 网格及归档禁用规则。
+运行时源尺寸副本位于 `public/assets/characters/` 与 `public/assets/silhouettes/`；移动端衍生档位于 `public/assets/runtime/{512,768}/`。代码只从 `public/assets/` 加载，并按设备档位成对选择颜色图与 Alpha。
+
+定稿更新后先同步源尺寸副本，再重新生成移动档：
+
+```bash
+./scripts/generate_runtime_character_assets.sh
+```
+
+脚本只读取 `redesign/{red,black}_*_v3.jpg` 与 `silhouettes/sil_*_alpha.png`，不会读取任何 `archive_*`，也不会改动同档位下独立生成的 `bases/`、`badges/` 等目录。颜色图与 Alpha 使用相同的等比缩放；其中马保持非方形画布，必须继续核对两层输出尺寸一致。
 
 ## 后续可扩展
 

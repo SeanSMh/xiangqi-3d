@@ -14,7 +14,23 @@ import type {
 import { pieceLabel } from '../engine/board'
 import { ArenaEnvironment } from './arenaEnvironment'
 import { BattleFeedback } from './battleFeedback'
-import { applyUnifiedLighting, FACTION_COLORS } from './lighting'
+import {
+  applyUnifiedLighting,
+  configureKeyLightShadow,
+  FACTION_COLORS,
+  invalidateShadowAwareMaterials,
+} from './lighting'
+import {
+  commitPresentationTextureReplacement,
+  resolvePresentationProfile,
+  resolvePresentationTextureRequestMode,
+  resolvePresentationTextureStatusAfterFailure,
+  resolvePresentationTextureUrl,
+  type CharacterAssetTier,
+  type PresentationProfile,
+  type SafeAreaInsetsCss,
+  type PresentationTextureStatus,
+} from './presentationProfile'
 import {
   CHARACTER_VISUAL_MODE,
   getCharacterVisualSpec,
@@ -55,10 +71,11 @@ export class BoardScene implements AnimationSurface {
   > | null = null
   private textureLoader = new THREE.TextureLoader()
   private textureCache = new Map<string, THREE.Texture>()
-  private textureStatus = new Map<
-    string,
-    'loading' | 'ready' | 'failed'
-  >()
+  private textureLoadRevision = new Map<string, number>()
+  private textureStatus = new Map<string, PresentationTextureStatus>()
+  private textureActiveTier = new Map<string, CharacterAssetTier>()
+  private reloadingTextures = new Set<string>()
+  private failedTextureReloads = new Set<string>()
   private billboardWorldPosition = new THREE.Vector3()
   private pointer = new THREE.Vector2()
   private raycaster = new THREE.Raycaster()
@@ -84,31 +101,60 @@ export class BoardScene implements AnimationSurface {
   private orangeImpact: THREE.Sprite | null = null
   private presentationTimeMs = 0
   private cameraRestPosition = new THREE.Vector3(0, 11, -10)
+  private cameraTarget = new THREE.Vector3()
   private cameraShakeOffset = new THREE.Vector3()
+  private presentationProfile: PresentationProfile
+  private keyLight: THREE.DirectionalLight
+  private resizeObserver: ResizeObserver | null = null
+  private readonly container: HTMLElement
 
   constructor(container: HTMLElement) {
+    this.container = container
     const w = container.clientWidth
     const h = container.clientHeight
-    this.camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 100)
-    // 固定斜俯视（对齐参考包镜头）
+    this.presentationProfile = resolvePresentationProfile(
+      w,
+      h,
+      window.devicePixelRatio,
+      readSafeAreaInsetsCss(container),
+    )
+    this.camera = new THREE.PerspectiveCamera(
+      this.presentationProfile.camera.fov,
+      w / h,
+      0.1,
+      100,
+    )
+    applyPresentationCameraProjection(
+      this.camera,
+      this.presentationProfile,
+    )
+    this.cameraRestPosition.copy(this.presentationProfile.camera.position)
+    this.cameraTarget.copy(this.presentationProfile.camera.target)
     this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(0, 0, 0)
+    this.camera.lookAt(this.cameraTarget)
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.renderer.setPixelRatio(this.presentationProfile.renderer.pixelRatio)
     this.renderer.setSize(w, h)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.1
-    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.enabled =
+      this.presentationProfile.renderer.shadows
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    this.renderer.shadowMap.autoUpdate =
+      this.presentationProfile.renderer.shadowAutoUpdate
     this.renderer.domElement.id = 'game-canvas'
     this.renderer.domElement.setAttribute('aria-label', '中国象棋棋盘')
-    this.renderer.domElement.style.touchAction = 'none'
+    this.renderer.domElement.style.touchAction = 'manipulation'
     this.renderer.domElement.style.cursor = 'pointer'
     container.appendChild(this.renderer.domElement)
 
-    applyUnifiedLighting(this.scene)
+    this.keyLight = applyUnifiedLighting(this.scene).key
+    configureKeyLightShadow(
+      this.keyLight,
+      this.presentationProfile.renderer.shadowMapSize,
+    )
     this.scene.add(this.arenaEnvironment.root)
     this.buildBoard()
     this.scene.add(this.boardRoot)
@@ -116,13 +162,90 @@ export class BoardScene implements AnimationSurface {
     this.boardRoot.add(this.battleFeedback.root)
     this.ensureImpactSprites()
 
-    window.addEventListener('resize', () => {
-      const cw = container.clientWidth
-      const ch = container.clientHeight
-      this.camera.aspect = cw / ch
-      this.camera.updateProjectionMatrix()
-      this.renderer.setSize(cw, ch)
-    })
+    const refit = () => this.resize(container.clientWidth, container.clientHeight)
+    window.addEventListener('resize', refit)
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(refit)
+      this.resizeObserver.observe(container)
+    }
+  }
+
+  /** 容器、全屏状态或 DPR 改变后统一重算相机与渲染预算。 */
+  resize(
+    width: number,
+    height: number,
+    devicePixelRatio = window.devicePixelRatio,
+    safeAreaInsetsCss = readSafeAreaInsetsCss(this.container),
+  ): void {
+    const previous = this.presentationProfile
+    const profile = resolvePresentationProfile(
+      width,
+      height,
+      devicePixelRatio,
+      safeAreaInsetsCss,
+    )
+    const sizeChanged =
+      profile.viewport.width !== previous.viewport.width ||
+      profile.viewport.height !== previous.viewport.height
+    const dprChanged =
+      profile.viewport.devicePixelRatio !== previous.viewport.devicePixelRatio
+    const framingChanged = !equalInsets(
+      profile.framingInsetsCss,
+      previous.framingInsetsCss,
+    )
+    if (!sizeChanged && !dprChanged && !framingChanged) return
+
+    const pixelRatioChanged =
+      profile.renderer.pixelRatio !== previous.renderer.pixelRatio
+    const shadowsChanged =
+      profile.renderer.shadows !== previous.renderer.shadows
+    const shadowMapSizeChanged =
+      profile.renderer.shadowMapSize !== previous.renderer.shadowMapSize
+    this.presentationProfile = profile
+
+    if (sizeChanged || framingChanged) {
+      applyPresentationCameraProjection(this.camera, profile)
+      this.cameraRestPosition.copy(profile.camera.position)
+      this.cameraTarget.copy(profile.camera.target)
+      this.camera.position.copy(this.cameraRestPosition)
+      this.camera.lookAt(this.cameraTarget)
+    }
+    if (pixelRatioChanged) {
+      this.renderer.setPixelRatio(profile.renderer.pixelRatio)
+    }
+    if (sizeChanged) {
+      this.renderer.setSize(profile.viewport.width, profile.viewport.height)
+    }
+    if (shadowsChanged) {
+      this.renderer.shadowMap.enabled = profile.renderer.shadows
+      invalidateShadowAwareMaterials(this.scene)
+    }
+    if (
+      profile.renderer.shadowAutoUpdate !==
+      previous.renderer.shadowAutoUpdate
+    ) {
+      this.renderer.shadowMap.autoUpdate = profile.renderer.shadowAutoUpdate
+    }
+    if (shadowMapSizeChanged) {
+      configureKeyLightShadow(this.keyLight, profile.renderer.shadowMapSize)
+    }
+    if (
+      profile.renderer.shadows &&
+      (shadowsChanged || shadowMapSizeChanged)
+    ) {
+      this.renderer.shadowMap.needsUpdate = true
+    }
+
+    if (profile.capturedDisplayMode !== previous.capturedDisplayMode) {
+      const showCapturedDisplays =
+        profile.capturedDisplayMode === 'side-columns'
+      for (const token of this.capturedDisplayMeshes.values()) {
+        token.visible = showCapturedDisplays
+      }
+    }
+    if (profile.textures.assetTier !== previous.textures.assetTier) {
+      this.reloadPresentationTextures()
+    }
   }
 
   setPresentationTime(timeMs: number): void {
@@ -343,7 +466,8 @@ export class BoardScene implements AnimationSurface {
         )
         token.rotation.set(0, 0, 0)
         token.scale.setScalar(0.46)
-        token.visible = true
+        token.visible =
+          this.presentationProfile.capturedDisplayMode === 'side-columns'
       })
     }
 
@@ -642,16 +766,7 @@ export class BoardScene implements AnimationSurface {
   private loadTexture(url: string): THREE.Texture {
     const cached = this.textureCache.get(url)
     if (cached) return cached
-    this.textureStatus.set(url, 'loading')
-    const texture = this.textureLoader.load(
-      url,
-      () => this.textureStatus.set(url, 'ready'),
-      undefined,
-      (error) => {
-        this.textureStatus.set(url, 'failed')
-        console.error(`[xiangqi-3d] 纹理加载失败: ${url}`, error)
-      },
-    )
+    const texture = new THREE.Texture()
     texture.colorSpace = url.includes('/silhouettes/')
       ? THREE.NoColorSpace
       : THREE.SRGBColorSpace
@@ -660,10 +775,105 @@ export class BoardScene implements AnimationSurface {
       this.renderer.capabilities.getMaxAnisotropy(),
     )
     this.textureCache.set(url, texture)
+    this.requestTextureImage(url, texture)
     return texture
   }
 
+  private reloadPresentationTextures(): void {
+    for (const [sourceUrl, texture] of this.textureCache) {
+      if (
+        resolvePresentationTextureUrl(sourceUrl, '512') === sourceUrl
+      ) {
+        continue
+      }
+      this.requestTextureImage(sourceUrl, texture)
+    }
+  }
+
+  private requestTextureImage(
+    sourceUrl: string,
+    target: THREE.Texture,
+  ): void {
+    const revision = (this.textureLoadRevision.get(sourceUrl) ?? 0) + 1
+    this.textureLoadRevision.set(sourceUrl, revision)
+    const requestedTier = this.presentationProfile.textures.assetTier
+    const mode = resolvePresentationTextureRequestMode(
+      this.textureStatus.get(sourceUrl),
+      this.textureActiveTier.get(sourceUrl),
+      requestedTier,
+    )
+    this.failedTextureReloads.delete(sourceUrl)
+    if (mode === 'already-active') {
+      this.reloadingTextures.delete(sourceUrl)
+      return
+    }
+    if (mode === 'background-reload') {
+      this.reloadingTextures.add(sourceUrl)
+    } else {
+      this.textureStatus.set(sourceUrl, 'loading')
+    }
+    const resolvedUrl = resolvePresentationTextureUrl(
+      sourceUrl,
+      requestedTier,
+    )
+    this.textureLoader.load(
+      resolvedUrl,
+      (replacement) => {
+        const committed = commitPresentationTextureReplacement(
+          target,
+          replacement.image,
+          revision,
+          this.textureLoadRevision.get(sourceUrl) ?? 0,
+          () => this.configurePresentationTexture(target, sourceUrl),
+        )
+        replacement.dispose()
+        if (!committed) return
+        if (resolvePresentationTextureUrl(sourceUrl, '512') !== sourceUrl) {
+          this.textureActiveTier.set(sourceUrl, requestedTier)
+        }
+        this.reloadingTextures.delete(sourceUrl)
+        this.failedTextureReloads.delete(sourceUrl)
+        this.textureStatus.set(sourceUrl, 'ready')
+      },
+      undefined,
+      (error) => {
+        if (this.textureLoadRevision.get(sourceUrl) !== revision) return
+        const failureStatus =
+          resolvePresentationTextureStatusAfterFailure(mode)
+        if (failureStatus === 'ready') {
+          this.reloadingTextures.delete(sourceUrl)
+          this.failedTextureReloads.add(sourceUrl)
+          console.warn(
+            `[xiangqi-3d] 纹理后台切档失败，继续使用旧图: ${resolvedUrl}`,
+            error,
+          )
+          return
+        }
+        this.textureStatus.set(sourceUrl, failureStatus)
+        console.error(
+          `[xiangqi-3d] 纹理加载失败: ${resolvedUrl}`,
+          error,
+        )
+      },
+    )
+  }
+
+  private configurePresentationTexture(
+    texture: THREE.Texture,
+    sourceUrl: string,
+  ): void {
+    if (resolvePresentationTextureUrl(sourceUrl, '512') === sourceUrl) return
+    const useMipmaps =
+      this.presentationProfile.textures.mipmaps === 'trilinear'
+    texture.generateMipmaps = useMipmaps
+    texture.minFilter = useMipmaps
+      ? THREE.LinearMipmapLinearFilter
+      : THREE.LinearFilter
+    texture.magFilter = THREE.LinearFilter
+  }
+
   getPresentationSnapshot(state: GameState) {
+    const boardProjection = this.measureBoardProjection()
     const colorAssets = (['red', 'black'] as const).flatMap((side) =>
       PIECE_KINDS.map(
         (kind) => getCharacterVisualSpec(side, kind).colorAssetUrl,
@@ -671,6 +881,12 @@ export class BoardScene implements AnimationSurface {
     )
     const maskAssets = PIECE_KINDS.map(
       (kind) => getCharacterVisualSpec('red', kind).alphaAssetUrl,
+    )
+    const presentationAssets = [...new Set([...colorAssets, ...maskAssets])]
+    const activeTextureTiers = new Set(
+      presentationAssets
+        .map((url) => this.textureActiveTier.get(url))
+        .filter((tier): tier is CharacterAssetTier => Boolean(tier)),
     )
     const renderedKinds = new Set<PieceKind>()
     let redInstances = 0
@@ -701,12 +917,39 @@ export class BoardScene implements AnimationSurface {
       sharedShapeAcrossFactions: false,
       factionSpecificArt: true,
       shadows: this.renderer.shadowMap.enabled,
+      presentationProfile: this.presentationProfile,
+      viewport: this.presentationProfile.viewport,
+      cameraProfile: this.presentationProfile.camera,
+      textureRuntime: {
+        requestedTier: this.presentationProfile.textures.assetTier,
+        activeTier:
+          activeTextureTiers.size === 0
+            ? null
+            : activeTextureTiers.size === 1
+              ? [...activeTextureTiers][0]
+              : 'mixed',
+        reloadingAssets: presentationAssets.filter((url) =>
+          this.reloadingTextures.has(url),
+        ),
+        failedReloadAssets: presentationAssets.filter((url) =>
+          this.failedTextureReloads.has(url),
+        ),
+      },
+      projectedBoardBoundsCss: boardProjection.bounds,
+      safeBoundsCss: boardProjection.safeBounds,
+      projectedCellSpacingCss: boardProjection.cellSpacing,
+      projectedCellSpacingByAxisCss: boardProjection.cellSpacingByAxis,
+      boardFullyVisible: boardProjection.fullyVisible,
+      boardClearOfHud: boardProjection.clearOfHud,
       checkPulseActive: Boolean(this.checkMarker?.visible),
       environment: this.arenaEnvironment.getSnapshot(),
       battleEffects: this.battleFeedback.getSnapshot(),
       logicalAlive: state.pieces.filter((piece) => !piece.captured).length,
       renderedInstances: this.pieceMeshes.size,
       capturedDisplayInstances: this.capturedDisplayMeshes.size,
+      capturedDisplayVisibleInstances: [
+        ...this.capturedDisplayMeshes.values(),
+      ].filter((mesh) => mesh.visible).length,
       capturedDisplayBySide: {
         red: [...this.capturedDisplayMeshes.values()].filter(
           (mesh) => mesh.userData.side === 'red',
@@ -739,6 +982,104 @@ export class BoardScene implements AnimationSurface {
       failedMasks: maskAssets.filter(
         (url) => this.textureStatus.get(url) === 'failed',
       ),
+    }
+  }
+
+  private measureBoardProjection(): {
+    bounds: { left: number; right: number; top: number; bottom: number }
+    safeBounds: { left: number; right: number; top: number; bottom: number }
+    cellSpacing: number
+    cellSpacingByAxis: { horizontal: number; vertical: number }
+    fullyVisible: boolean
+    clearOfHud: boolean
+  } {
+    const { width, height } = this.presentationProfile.viewport
+    const camera = this.camera.clone()
+    camera.position.copy(this.cameraRestPosition)
+    camera.lookAt(this.cameraTarget)
+    applyPresentationCameraProjection(camera, this.presentationProfile)
+    camera.updateMatrixWorld(true)
+
+    const project = (x: number, z: number) => {
+      const point = new THREE.Vector3(x, 0.05, z).project(camera)
+      return {
+        x: ((point.x + 1) / 2) * width,
+        y: ((1 - point.y) / 2) * height,
+      }
+    }
+    const edgeX = BOARD_W / 2 + 0.47
+    const edgeZ = BOARD_H / 2 + 0.47
+    const corners = [
+      project(-edgeX, -edgeZ),
+      project(edgeX, -edgeZ),
+      project(-edgeX, edgeZ),
+      project(edgeX, edgeZ),
+    ]
+    const rawBounds = {
+      left: Math.min(...corners.map((point) => point.x)),
+      right: Math.max(...corners.map((point) => point.x)),
+      top: Math.min(...corners.map((point) => point.y)),
+      bottom: Math.max(...corners.map((point) => point.y)),
+    }
+
+    let horizontal = Number.POSITIVE_INFINITY
+    let vertical = Number.POSITIVE_INFINITY
+    for (let rank = 0; rank <= 9; rank += 1) {
+      for (let file = 0; file < 8; file += 1) {
+        horizontal = Math.min(
+          horizontal,
+          screenDistance(
+            project((file - 4) * CELL, (rank - 4.5) * CELL),
+            project((file + 1 - 4) * CELL, (rank - 4.5) * CELL),
+          ),
+        )
+      }
+    }
+    for (let file = 0; file <= 8; file += 1) {
+      for (let rank = 0; rank < 9; rank += 1) {
+        vertical = Math.min(
+          vertical,
+          screenDistance(
+            project((file - 4) * CELL, (rank - 4.5) * CELL),
+            project((file - 4) * CELL, (rank + 1 - 4.5) * CELL),
+          ),
+        )
+      }
+    }
+
+    const round = (value: number) => Math.round(value * 10) / 10
+    const bounds = {
+      left: round(rawBounds.left),
+      right: round(rawBounds.right),
+      top: round(rawBounds.top),
+      bottom: round(rawBounds.bottom),
+    }
+    const insets = this.presentationProfile.framingInsetsCss
+    const safeBounds = {
+      left: insets.left,
+      right: width - insets.right,
+      top: insets.top,
+      bottom: height - insets.bottom,
+    }
+    const fullyVisible =
+      rawBounds.left >= 0 &&
+      rawBounds.right <= width &&
+      rawBounds.top >= 0 &&
+      rawBounds.bottom <= height
+    return {
+      bounds,
+      safeBounds,
+      cellSpacing: round(Math.min(horizontal, vertical)),
+      cellSpacingByAxis: {
+        horizontal: round(horizontal),
+        vertical: round(vertical),
+      },
+      fullyVisible,
+      clearOfHud:
+        rawBounds.left >= safeBounds.left &&
+        rawBounds.right <= safeBounds.right &&
+        rawBounds.top >= safeBounds.top &&
+        rawBounds.bottom <= safeBounds.bottom,
     }
   }
 
@@ -1002,6 +1343,9 @@ export class BoardScene implements AnimationSurface {
         this.camera.position.z - this.billboardWorldPosition.z,
       )
       card.rotation.y = worldYaw - root.rotation.y
+      card.rotation.x =
+        this.presentationProfile.camera.billboardPitchRadians
+      card.scale.setScalar(this.presentationProfile.camera.billboardScale)
     }
   }
 
@@ -1059,10 +1403,10 @@ export class BoardScene implements AnimationSurface {
     this.camera.position
       .copy(this.cameraRestPosition)
       .add(this.cameraShakeOffset)
-    this.camera.lookAt(0, 0, 0)
+    this.camera.lookAt(this.cameraTarget)
     this.renderer.render(this.scene, this.camera)
     this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(0, 0, 0)
+    this.camera.lookAt(this.cameraTarget)
   }
 }
 
@@ -1100,6 +1444,13 @@ function setSpriteVisual(
   sprite.visible = visible
   sprite.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1)
   sprite.scale.setScalar(scale)
+}
+
+function screenDistance(
+  first: { x: number; y: number },
+  second: { x: number; y: number },
+): number {
+  return Math.hypot(second.x - first.x, second.y - first.y)
 }
 
 function createSilhouetteMaterial(
@@ -1290,4 +1641,56 @@ function disposeObject(root: THREE.Object3D): void {
       : [child.material]
     for (const material of materials) material.dispose()
   })
+}
+
+function readSafeAreaInsetsCss(container: HTMLElement): SafeAreaInsetsCss {
+  const style = window.getComputedStyle(container)
+  return {
+    top: readCssPixelValue(style, '--xq-safe-top'),
+    right: readCssPixelValue(style, '--xq-safe-right'),
+    bottom: readCssPixelValue(style, '--xq-safe-bottom'),
+    left: readCssPixelValue(style, '--xq-safe-left'),
+  }
+}
+
+function readCssPixelValue(
+  style: CSSStyleDeclaration,
+  property: string,
+): number {
+  const value = Number.parseFloat(style.getPropertyValue(property))
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function equalInsets(
+  left: SafeAreaInsetsCss,
+  right: SafeAreaInsetsCss,
+): boolean {
+  return (
+    left.top === right.top &&
+    left.right === right.right &&
+    left.bottom === right.bottom &&
+    left.left === right.left
+  )
+}
+
+function applyPresentationCameraProjection(
+  camera: THREE.PerspectiveCamera,
+  profile: PresentationProfile,
+): void {
+  camera.fov = profile.camera.fov
+  camera.aspect = profile.viewport.aspect
+  const offset = profile.camera.projectionCenterOffsetCss
+  if (offset.x === 0 && offset.y === 0) {
+    camera.clearViewOffset()
+  } else {
+    camera.setViewOffset(
+      profile.viewport.width,
+      profile.viewport.height,
+      -offset.x,
+      -offset.y,
+      profile.viewport.width,
+      profile.viewport.height,
+    )
+  }
+  camera.updateProjectionMatrix()
 }

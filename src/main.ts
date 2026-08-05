@@ -17,6 +17,10 @@ import {
   isAiTurn,
   type MatchConfig,
 } from './game/match'
+import {
+  BOARD_TAP_MOVE_THRESHOLD_PX,
+  BoardTapGesture,
+} from './input/boardTapGesture'
 import { BoardScene } from './scene/boardScene'
 import type { GameState, Move } from './types/xiangqi'
 import {
@@ -36,6 +40,7 @@ const controller = new GameController()
 const scene = new BoardScene(app)
 const animations = new AnimationDirector(scene)
 const gameAudio = new GameAudio()
+const boardTapGesture = new BoardTapGesture()
 let matchConfig: MatchConfig = { ...DEFAULT_MATCH_CONFIG }
 const hud = new Hud(app, {
   onToggleMatchSettings: () => toggleMatchSettings(),
@@ -61,6 +66,9 @@ let replayElapsedMs = 0
 let manualClock =
   new URLSearchParams(window.location.search).get('clock') === 'manual'
 let lastFrameTime = performance.now()
+const fullscreenAvailable =
+  document.fullscreenEnabled && typeof app.requestFullscreen === 'function'
+app.dataset.fullscreenAvailable = String(fullscreenAvailable)
 
 function unlockGameAudio(): void {
   gameAudio.unlock()
@@ -77,10 +85,36 @@ function handlePageHide(event: PageTransitionEvent): void {
   window.removeEventListener('pointerdown', unlockGameAudio, { capture: true })
   window.removeEventListener('keydown', unlockGameAudio, { capture: true })
   window.removeEventListener('pagehide', handlePageHide)
+  window.removeEventListener('pageshow', handlePageShow)
+  document.removeEventListener('fullscreenchange', refitSceneToViewport)
+  window.visualViewport?.removeEventListener('resize', refitSceneToViewport)
   gameAudio.dispose()
 }
 
 window.addEventListener('pagehide', handlePageHide)
+
+function refitSceneToViewport(): void {
+  hud.resize()
+  hud.setFullscreenState(Boolean(document.fullscreenElement))
+  scene.resize(app.clientWidth, app.clientHeight, window.devicePixelRatio)
+}
+
+function handlePageShow(event: PageTransitionEvent): void {
+  if (!event.persisted) return
+  // BFCache 会保留 Three 场景和手势状态；恢复时丢弃离页前的旧时钟/触点。
+  lastFrameTime = performance.now()
+  boardTapGesture.cancel()
+  refitSceneToViewport()
+  scene.setPresentationTime(simulationTime)
+  syncUiAndMarkers()
+  scene.render()
+}
+
+window.addEventListener('pageshow', handlePageShow)
+document.addEventListener('fullscreenchange', refitSceneToViewport)
+window.visualViewport?.addEventListener('resize', refitSceneToViewport, {
+  passive: true,
+})
 
 function syncUiAndMarkers(): void {
   const state = controller.getState()
@@ -389,6 +423,10 @@ function stopReplay(): void {
 }
 
 async function toggleFullscreen(): Promise<void> {
+  if (!fullscreenAvailable) {
+    showInteractionFeedback({ reason: 'fullscreen-unavailable' })
+    return
+  }
   try {
     if (document.fullscreenElement) {
       await document.exitFullscreen()
@@ -397,13 +435,41 @@ async function toggleFullscreen(): Promise<void> {
     }
   } catch (error) {
     console.warn('[xiangqi-3d] 无法切换全屏', error)
+    showInteractionFeedback({ reason: 'fullscreen-failed' })
   }
 }
 
-scene.renderer.domElement.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0) {
-    return
+const boardCanvas = scene.renderer.domElement
+
+boardCanvas.addEventListener('pointerdown', (event) => {
+  if (!boardTapGesture.begin(event)) return
+  event.preventDefault()
+  boardCanvas.setPointerCapture(event.pointerId)
+})
+
+boardCanvas.addEventListener('pointermove', (event) => {
+  if (boardTapGesture.move(event)) event.preventDefault()
+})
+
+boardCanvas.addEventListener('pointercancel', (event) => {
+  boardTapGesture.cancel(event.pointerId)
+})
+
+boardCanvas.addEventListener('lostpointercapture', (event) => {
+  boardTapGesture.cancel(event.pointerId)
+})
+
+boardCanvas.addEventListener('pointerup', (event) => {
+  const tap = boardTapGesture.end(event)
+  if (boardCanvas.hasPointerCapture(event.pointerId)) {
+    boardCanvas.releasePointerCapture(event.pointerId)
   }
+  if (!tap) return
+  event.preventDefault()
+  handleBoardTap(tap.clientX, tap.clientY)
+})
+
+function handleBoardTap(clientX: number, clientY: number): void {
   const state = controller.getState()
   const lockedReason = getInputLockedReason(state)
   if (lockedReason) {
@@ -411,7 +477,7 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
     if (feedback) showInteractionFeedback(feedback)
     return
   }
-  const square = scene.pickSquare(event.clientX, event.clientY)
+  const square = scene.pickSquare(clientX, clientY)
   if (!square) {
     showInteractionFeedback({ reason: 'outside-board' })
     return
@@ -435,7 +501,7 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
   }
 
   startMoveAnimation(result.move)
-})
+}
 
 function startMoveAnimation(move: Move): void {
   clearInteractionFeedback()
@@ -669,6 +735,12 @@ window.render_game_to_text = () => {
       inputLocked,
       inputLockedReason: getInputLockedReason(state),
       boardInputEnabled: !inputLocked,
+      input: {
+        boardPointerCommit: 'primary-pointerup-tap',
+        dragThresholdCssPx: BOARD_TAP_MOVE_THRESHOLD_PX,
+        activePointerId: boardTapGesture.activePointerId,
+        fullscreenAvailable,
+      },
       rules: {
         profile: state.ruleState?.ruleset ?? 'program-competition-2023',
         positionOccurrences:

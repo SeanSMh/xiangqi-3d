@@ -82,6 +82,44 @@ export function applyUnifiedLighting(scene: THREE.Scene): {
   return { key, fill, rim }
 }
 
+/** 在响应式画质档切换时重建主光阴影图，避免继续占用旧尺寸显存。 */
+export function configureKeyLightShadow(
+  key: THREE.DirectionalLight,
+  mapSize: 512 | 1024 | 2048,
+): void {
+  if (key.shadow.mapSize.width === mapSize) return
+  key.shadow.mapSize.set(mapSize, mapSize)
+  if (key.shadow.map) {
+    key.shadow.map.dispose()
+    key.shadow.map = null
+  }
+  key.shadow.needsUpdate = true
+}
+
+/** 阴影开关改变会影响 shader define；只让会接收灯光阴影的材质重新编译。 */
+export function invalidateShadowAwareMaterials(scene: THREE.Scene): number {
+  const invalidated = new Set<THREE.Material>()
+  scene.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return
+    const materials = Array.isArray(object.material)
+      ? object.material
+      : [object.material]
+    for (const material of materials) {
+      if (
+        material instanceof THREE.MeshStandardMaterial ||
+        material instanceof THREE.MeshLambertMaterial ||
+        material instanceof THREE.MeshPhongMaterial ||
+        material instanceof THREE.MeshToonMaterial ||
+        material instanceof THREE.ShadowMaterial
+      ) {
+        invalidated.add(material)
+      }
+    }
+  })
+  for (const material of invalidated) material.needsUpdate = true
+  return invalidated.size
+}
+
 /** 阵营材质基础色（非纯黑） */
 export const FACTION_COLORS = {
   red: {

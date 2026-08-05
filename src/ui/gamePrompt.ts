@@ -56,6 +56,8 @@ export type InteractionFeedbackReason =
   | 'no-selection'
   | 'friendly-occupied'
   | 'outside-board'
+  | 'fullscreen-unavailable'
+  | 'fullscreen-failed'
   | 'illegal-pattern'
   | 'path-blocked'
   | 'horse-leg-blocked'
@@ -441,6 +443,18 @@ function interactionPrompt(
       return warning(feedback.reason, '落点已有己方棋子', '请改选或另选落点')
     case 'outside-board':
       return warning(feedback.reason, '落点超出棋盘')
+    case 'fullscreen-unavailable':
+      return warning(
+        feedback.reason,
+        '当前浏览器不支持应用内全屏',
+        '可使用浏览器自带的全屏或添加到主屏幕',
+      )
+    case 'fullscreen-failed':
+      return warning(
+        feedback.reason,
+        '未能切换全屏',
+        '请允许全屏权限，或使用浏览器自带的全屏',
+      )
     case 'illegal-pattern':
       return warning(feedback.reason, `${selectedName}不能这样走`)
     case 'path-blocked':

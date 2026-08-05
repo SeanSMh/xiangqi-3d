@@ -14,6 +14,7 @@ import type {
   Side,
 } from '../types/xiangqi'
 import type { GamePrompt } from './gamePrompt'
+import { resolveHudLayout } from './responsiveHud'
 import './hud.css'
 
 interface HudActions {
@@ -75,6 +76,7 @@ export interface SpoilsViewModel {
 
 /** 左上局面、右上战果、底部操作、棋谱抽屉与终局提示。 */
 export class Hud {
+  private rootEl: HTMLDivElement
   private turnLabelEl: HTMLSpanElement
   private checkEl: HTMLSpanElement
   private spoilsEl: HTMLDivElement
@@ -86,11 +88,13 @@ export class Hud {
   private selectionEl: HTMLDivElement
   private gameStatusEl: HTMLDivElement
   private gameStatusVisibleEl: HTMLSpanElement
+  private gameStatusCompactEl: HTMLSpanElement
   private gameStatusLiveEl: HTMLSpanElement
   private undoButton: HTMLButtonElement
   private gameModeButton: HTMLButtonElement
   private historyToggleButton: HTMLButtonElement
   private ruleHelpButton: HTMLButtonElement
+  private fullscreenButton: HTMLButtonElement
   private settingsDialog: HTMLDialogElement
   private ruleHelpDialog: HTMLDialogElement
   private modeLocalRadio: HTMLInputElement
@@ -108,11 +112,15 @@ export class Hud {
   private returnLiveButton: HTMLButtonElement
   private historyOpen = false
   private readonly actions: HudActions
+  private readonly container: HTMLElement
+  private readonly handleViewportResize = () => this.resize()
 
   constructor(container: HTMLElement, actions: HudActions) {
+    this.container = container
     this.actions = actions
     const root = document.createElement('div')
     root.id = 'xiangqi-hud'
+    this.rootEl = root
 
     const turnPanel = makePanel('turn-panel')
     this.turnLabelEl = document.createElement('span')
@@ -156,16 +164,26 @@ export class Hud {
     this.gameStatusEl = document.createElement('div')
     this.gameStatusEl.id = 'game-status'
     this.gameStatusVisibleEl = document.createElement('span')
+    this.gameStatusVisibleEl.className = 'game-status-title'
     this.gameStatusVisibleEl.setAttribute('aria-hidden', 'true')
+    this.gameStatusCompactEl = document.createElement('span')
+    this.gameStatusCompactEl.className = 'game-status-compact'
+    this.gameStatusCompactEl.setAttribute('aria-hidden', 'true')
     this.gameStatusLiveEl = document.createElement('span')
     this.gameStatusLiveEl.className = 'xq-sr-only'
     this.gameStatusLiveEl.setAttribute('role', 'status')
     this.gameStatusLiveEl.setAttribute('aria-live', 'polite')
     this.gameStatusLiveEl.setAttribute('aria-atomic', 'true')
-    this.gameStatusEl.append(this.gameStatusVisibleEl, this.gameStatusLiveEl)
+    this.gameStatusEl.append(
+      this.gameStatusVisibleEl,
+      this.gameStatusCompactEl,
+      this.gameStatusLiveEl,
+    )
 
     const controls = document.createElement('div')
     controls.className = 'xq-controls'
+    controls.setAttribute('role', 'toolbar')
+    controls.setAttribute('aria-label', '棋局操作')
 
     this.selectionEl = document.createElement('div')
     this.selectionEl.id = 'selection-status'
@@ -179,7 +197,9 @@ export class Hud {
     this.gameModeButton.setAttribute('aria-controls', 'game-settings-dialog')
     this.gameModeButton.setAttribute('aria-expanded', 'false')
     this.gameModeButton.setAttribute('aria-keyshortcuts', 'M')
+    this.gameModeButton.dataset.shortLabel = '模式'
     this.undoButton = makeButton('undo-btn', '悔棋 U', actions.onUndo)
+    this.undoButton.dataset.shortLabel = '悔棋'
     this.historyToggleButton = makeButton(
       'history-toggle-btn',
       '棋谱 H',
@@ -190,6 +210,7 @@ export class Hud {
       'move-history-panel',
     )
     this.historyToggleButton.setAttribute('aria-expanded', 'false')
+    this.historyToggleButton.dataset.shortLabel = '棋谱'
     this.ruleHelpButton = makeButton(
       'rule-help-btn',
       '规则 ?',
@@ -199,12 +220,16 @@ export class Hud {
     this.ruleHelpButton.setAttribute('aria-controls', 'rule-help-dialog')
     this.ruleHelpButton.setAttribute('aria-expanded', 'false')
     this.ruleHelpButton.setAttribute('aria-keyshortcuts', '?')
+    this.ruleHelpButton.dataset.shortLabel = '规则'
     const restartButton = makeButton('restart-btn', '重开 R', actions.onRestart)
-    const fullscreenButton = makeButton(
+    restartButton.dataset.shortLabel = '重开'
+    this.fullscreenButton = makeButton(
       'fullscreen-btn',
       '全屏 F',
       actions.onToggleFullscreen,
     )
+    this.fullscreenButton.setAttribute('aria-pressed', 'false')
+    this.fullscreenButton.dataset.shortLabel = '全屏'
     controls.append(
       this.selectionEl,
       this.gameModeButton,
@@ -212,7 +237,7 @@ export class Hud {
       this.historyToggleButton,
       this.ruleHelpButton,
       restartButton,
-      fullscreenButton,
+      this.fullscreenButton,
     )
 
     this.settingsDialog = document.createElement('dialog')
@@ -412,16 +437,58 @@ export class Hud {
     historyFooter.append(this.historyCursorLabel, historyNav)
     this.historyPanel.append(historyHeader, this.historyList, historyFooter)
 
+    const topRegion = document.createElement('div')
+    topRegion.className = 'xq-top-region'
+    topRegion.append(turnPanel, this.spoilsEl, this.gameStatusEl)
+
     root.append(
-      turnPanel,
-      this.spoilsEl,
-      this.gameStatusEl,
+      topRegion,
       controls,
       this.settingsDialog,
       this.ruleHelpDialog,
       this.historyPanel,
     )
     container.appendChild(root)
+
+    this.resize()
+    window.addEventListener('resize', this.handleViewportResize, {
+      passive: true,
+    })
+  }
+
+  /** BFCache、动态 viewport 与全屏切换后重算 HUD 预留和触控尺寸。 */
+  resize(): void {
+    const width = this.container.clientWidth || window.innerWidth
+    const height = this.container.clientHeight || window.innerHeight
+    const profile = resolveHudLayout(width, height)
+    this.rootEl.dataset.layout = profile.mode
+    this.rootEl.dataset.orientation = profile.orientation
+    this.rootEl.style.setProperty(
+      '--xq-hud-top-reserved',
+      `${profile.topReservedPx}px`,
+    )
+    this.rootEl.style.setProperty(
+      '--xq-hud-bottom-reserved',
+      `${profile.bottomReservedPx}px`,
+    )
+    this.rootEl.style.setProperty(
+      '--xq-hud-left-reserved',
+      `${profile.leftReservedPx}px`,
+    )
+    this.rootEl.style.setProperty(
+      '--xq-hud-right-reserved',
+      `${profile.rightReservedPx}px`,
+    )
+    this.rootEl.style.setProperty(
+      '--xq-touch-target',
+      `${profile.minimumTouchTargetPx}px`,
+    )
+  }
+
+  setFullscreenState(active: boolean): void {
+    this.fullscreenButton.textContent = active ? '退出全屏 F' : '全屏 F'
+    this.fullscreenButton.dataset.shortLabel = active ? '退出' : '全屏'
+    this.fullscreenButton.setAttribute('aria-pressed', String(active))
   }
 
   get isHistoryOpen(): boolean {
@@ -475,6 +542,7 @@ export class Hud {
     this.historyPanel.hidden = !open
     this.historyToggleButton.setAttribute('aria-expanded', String(open))
     this.historyToggleButton.textContent = open ? '收起 H' : '棋谱 H'
+    this.historyToggleButton.dataset.shortLabel = open ? '收起' : '棋谱'
     if (open) {
       this.historyPanel.focus({ preventScroll: true })
     } else if (panelHadFocus) {
@@ -520,6 +588,10 @@ export class Hud {
     this.gameStatusEl.classList.toggle('is-ai-thinking', prompt.code === 'ai-thinking')
     if (this.gameStatusVisibleEl.textContent !== prompt.title) {
       this.gameStatusVisibleEl.textContent = prompt.title
+    }
+    const compactPromptLabel = createCompactPromptLabel(prompt)
+    if (this.gameStatusCompactEl.textContent !== compactPromptLabel) {
+      this.gameStatusCompactEl.textContent = compactPromptLabel
     }
     const promptDetails = [
       prompt.detail,
@@ -940,4 +1012,18 @@ function pieceValue(kind: Piece['kind']): number {
     case 'king':
       return 0
   }
+}
+
+/** 手机竖屏只容纳一行提示；异常信息保持权威标题，不截断成含糊短句。 */
+export function createCompactPromptLabel(prompt: GamePrompt): string {
+  if (prompt.code === 'turn-local' || prompt.code === 'turn-human') {
+    return '点棋子，再点高亮落点'
+  }
+  if (prompt.code === 'piece-selected') {
+    const followUp = prompt.detail?.includes('没有合法落点')
+      ? prompt.action
+      : prompt.detail
+    return [prompt.title, followUp].filter(Boolean).join(' · ')
+  }
+  return prompt.title
 }

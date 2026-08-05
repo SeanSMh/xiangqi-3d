@@ -366,6 +366,16 @@ describe('deriveGamePrompt', () => {
     ['no-selection', '请先选择一枚己方棋子', undefined],
     ['friendly-occupied', '落点已有己方棋子', '请改选或另选落点'],
     ['outside-board', '落点超出棋盘', undefined],
+    [
+      'fullscreen-unavailable',
+      '当前浏览器不支持应用内全屏',
+      '可使用浏览器自带的全屏或添加到主屏幕',
+    ],
+    [
+      'fullscreen-failed',
+      '未能切换全屏',
+      '请允许全屏权限，或使用浏览器自带的全屏',
+    ],
     ['illegal-pattern', '红马不能这样走', undefined],
     ['path-blocked', '行棋路线被棋子阻挡', undefined],
     ['horse-leg-blocked', '马腿被别住', '不能落到这里'],
