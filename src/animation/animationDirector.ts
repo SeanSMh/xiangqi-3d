@@ -59,6 +59,10 @@ export interface ActiveAnimationSnapshot {
   elapsedMs: number
   durationMs: number
   progress: number
+  hitStop: {
+    durationMs: number
+    active: boolean
+  }
   move: {
     pieceId: string
     pieceKind: PieceKind
@@ -117,6 +121,8 @@ const IDLE_SNAPSHOT: IdleAnimationSnapshot = {
   inputLocked: false,
   phase: 'idle',
 }
+
+const CAPTURE_HIT_STOP_MS = 65
 
 export class AnimationDirector {
   private active: ActiveAnimation | null = null
@@ -228,6 +234,13 @@ export class AnimationDirector {
       elapsedMs: round(active.elapsedMs),
       durationMs: round(active.totalMs),
       progress: round(active.elapsedMs / active.totalMs),
+      hitStop: {
+        durationMs: active.victimId ? CAPTURE_HIT_STOP_MS : 0,
+        active:
+          Boolean(active.victimId) &&
+          active.phase === 'impact' &&
+          active.elapsedMs - active.travelMs < CAPTURE_HIT_STOP_MS,
+      },
       move: {
         pieceId: active.move.pieceId,
         pieceKind: active.pieceKind,
@@ -326,23 +339,29 @@ export class AnimationDirector {
       )
     } else if (active.victimId && captureElapsed < active.impactMs) {
       const t = captureElapsed / active.impactMs
+      const motionT = clamp(
+        (captureElapsed - CAPTURE_HIT_STOP_MS) /
+          (active.impactMs - CAPTURE_HIT_STOP_MS),
+        0,
+        1,
+      )
       active.phase = 'impact'
       active.attackerVisual = active.cannonCapture
         ? {
             ...poseAt(active.move.from),
-            scale: 1 - Math.sin(Math.PI * t) * 0.04,
+            scale: 1 - Math.sin(Math.PI * motionT) * 0.04,
           }
         : {
             ...poseAt(active.move.to),
-            lift: Math.sin(Math.PI * t) * 0.12,
-            scale: 1 + Math.sin(Math.PI * t) * 0.1,
+            lift: Math.sin(Math.PI * motionT) * 0.12,
+            scale: 1 + Math.sin(Math.PI * motionT) * 0.1,
           }
       active.projectileVisual = null
       active.projectileProgress = 1
       active.victimVisual = active.victimSquare
         ? {
             ...poseAt(active.victimSquare),
-            scale: 1 - Math.sin(Math.PI * t) * 0.12,
+            scale: 1 - Math.sin(Math.PI * motionT) * 0.12,
           }
         : null
       active.victimState = 'hit'

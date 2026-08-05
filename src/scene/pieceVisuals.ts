@@ -1,6 +1,7 @@
 import type { PieceKind, Side } from '../types/xiangqi'
 
 export const ROLE_VISUAL_MODE = 'production-v3-silhouette' as const
+export const CHARACTER_VISUAL_MODE = 'production-v3-color-card' as const
 export const ROLE_BASE_TOP = 0.24
 export const MAX_ROLE_FOOTPRINT = 0.85
 export const ROLE_RIM_SCALE = 1.055
@@ -15,11 +16,11 @@ export const PIECE_KINDS = [
   'pawn',
 ] as const satisfies readonly PieceKind[]
 
-interface AlphaBounds {
-  left: number
-  top: number
-  right: number
-  bottom: number
+export interface AlphaBounds {
+  readonly left: number
+  readonly top: number
+  readonly right: number
+  readonly bottom: number
 }
 
 export interface SilhouetteSpec {
@@ -37,6 +38,77 @@ export interface SilhouetteLayout {
   geometryOffsetX: number
   geometryOffsetY: number
   visibleFootprintWidth: number
+}
+
+export interface UvTransform {
+  readonly offsetX: number
+  readonly offsetY: number
+  readonly scaleX: number
+  readonly scaleY: number
+}
+
+export interface CharacterAnchor {
+  /** 原图左上角为原点的归一化横坐标，落在 Alpha 可见边界中心。 */
+  readonly sourceX: number
+  /** 原图左上角为原点的归一化纵坐标，落在 Alpha 可见边界底部。 */
+  readonly sourceY: number
+  /** 以脚底为局部原点时，整张卡片几何体的横向偏移。 */
+  readonly planeOffsetX: number
+  /** 以脚底为局部原点时，整张卡片几何体的纵向偏移。 */
+  readonly planeOffsetY: number
+}
+
+/**
+ * 全彩角色卡规格。JPG 负责颜色，当前同源 Alpha 负责透明轮廓；若颜色纹理
+ * 加载失败，表现层应回退到 fallbackAssetUrl 的阵营色剪影。
+ */
+export interface CharacterVisualSpec {
+  readonly side: Side
+  readonly kind: PieceKind
+  readonly colorAssetUrl: string
+  readonly alphaAssetUrl: string
+  readonly fallbackAssetUrl: string
+  readonly imageWidth: number
+  readonly imageHeight: number
+  readonly alphaBounds: AlphaBounds
+  readonly visibleHeight: number
+  /** 当前 v3 颜色图与 Alpha 图共享相同像素网格，UV 均为恒等变换。 */
+  readonly colorUvTransform: UvTransform
+  readonly maskUvTransform: UvTransform
+  readonly anchor: CharacterAnchor
+  readonly layout: SilhouetteLayout
+  readonly maxFootprint: number
+}
+
+export type CharacterAssetLoadStatus =
+  | 'loading'
+  | 'ready'
+  | 'failed'
+  | undefined
+
+export interface CharacterLayerVisibility {
+  colorBody: boolean
+  silhouette: boolean
+  rim: boolean
+  geometricPlaceholder: boolean
+}
+
+/**
+ * 两张贴图独立加载：只有颜色与 Alpha 都完成时才显示全彩；Alpha 未就绪或
+ * 失败时显示不依赖纹理的几何占位，避免角色只剩底座。
+ */
+export function resolveCharacterLayerVisibility(
+  colorStatus: CharacterAssetLoadStatus,
+  maskStatus: CharacterAssetLoadStatus,
+): CharacterLayerVisibility {
+  const maskReady = maskStatus === 'ready'
+  const colorReady = colorStatus === 'ready'
+  return {
+    colorBody: colorReady && maskReady,
+    silhouette: maskReady && !colorReady,
+    rim: maskReady,
+    geometricPlaceholder: !maskReady,
+  }
 }
 
 export const SILHOUETTE_SPECS: Record<PieceKind, SilhouetteSpec> = {
@@ -79,6 +151,28 @@ export const SILHOUETTE_COLORS: Record<
 > = {
   red: { body: 0x8b1a1a, rim: 0xd4af37 },
   black: { body: 0x1a2838, rim: 0x83bdf0 },
+}
+
+const IDENTITY_UV_TRANSFORM: UvTransform = {
+  offsetX: 0,
+  offsetY: 0,
+  scaleX: 1,
+  scaleY: 1,
+}
+
+export const CHARACTER_SPECS: Record<
+  Side,
+  Record<PieceKind, CharacterVisualSpec>
+> = {
+  red: createCharacterSideSpecs('red'),
+  black: createCharacterSideSpecs('black'),
+}
+
+export function getCharacterVisualSpec(
+  side: Side,
+  kind: PieceKind,
+): CharacterVisualSpec {
+  return CHARACTER_SPECS[side][kind]
 }
 
 export function getSilhouetteLayout(kind: PieceKind): SilhouetteLayout {
@@ -126,5 +220,48 @@ function silhouetteSpec(
       bottom: bounds[3],
     },
     visibleHeight,
+  }
+}
+
+function createCharacterSideSpecs(
+  side: Side,
+): Record<PieceKind, CharacterVisualSpec> {
+  return Object.fromEntries(
+    PIECE_KINDS.map((kind) => [kind, characterSpec(side, kind)]),
+  ) as Record<PieceKind, CharacterVisualSpec>
+}
+
+function characterSpec(
+  side: Side,
+  kind: PieceKind,
+): CharacterVisualSpec {
+  const silhouette = SILHOUETTE_SPECS[kind]
+  const layout = getSilhouetteLayout(kind)
+  const visibleCenterX =
+    (silhouette.alphaBounds.left + silhouette.alphaBounds.right + 1) /
+    (2 * silhouette.imageWidth)
+  const visibleBottomY =
+    (silhouette.alphaBounds.bottom + 1) / silhouette.imageHeight
+
+  return {
+    side,
+    kind,
+    colorAssetUrl: `/assets/characters/${side}_${kind}_v3.jpg`,
+    alphaAssetUrl: silhouette.assetUrl,
+    fallbackAssetUrl: silhouette.assetUrl,
+    imageWidth: silhouette.imageWidth,
+    imageHeight: silhouette.imageHeight,
+    alphaBounds: silhouette.alphaBounds,
+    visibleHeight: silhouette.visibleHeight,
+    colorUvTransform: IDENTITY_UV_TRANSFORM,
+    maskUvTransform: IDENTITY_UV_TRANSFORM,
+    anchor: {
+      sourceX: visibleCenterX,
+      sourceY: visibleBottomY,
+      planeOffsetX: layout.geometryOffsetX,
+      planeOffsetY: layout.geometryOffsetY,
+    },
+    layout,
+    maxFootprint: MAX_ROLE_FOOTPRINT,
   }
 }

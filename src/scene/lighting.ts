@@ -59,6 +59,16 @@ export function applyUnifiedLighting(scene: THREE.Scene): {
 
   const key = new THREE.DirectionalLight(LIGHTING.key.color, LIGHTING.key.intensity)
   key.position.copy(LIGHTING.key.position)
+  key.castShadow = true
+  key.shadow.mapSize.set(2048, 2048)
+  key.shadow.camera.left = -9
+  key.shadow.camera.right = 9
+  key.shadow.camera.top = 10
+  key.shadow.camera.bottom = -10
+  key.shadow.camera.near = 1
+  key.shadow.camera.far = 32
+  key.shadow.bias = -0.00035
+  key.shadow.normalBias = 0.018
   scene.add(key)
 
   const fill = new THREE.DirectionalLight(LIGHTING.fill.color, LIGHTING.fill.intensity)

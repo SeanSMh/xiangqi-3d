@@ -3,6 +3,7 @@
  * 规则状态是唯一真相，Three.js 只负责呈现、演出与输入拾取。
  */
 import { AnimationDirector } from './animation/animationDirector'
+import { GameAudio } from './audio/gameAudio'
 import { pieceAt, pieceLabel } from './engine/board'
 import { AiCoordinator } from './game/aiCoordinator'
 import {
@@ -34,6 +35,7 @@ const INTERACTION_FEEDBACK_MS = 1800
 const controller = new GameController()
 const scene = new BoardScene(app)
 const animations = new AnimationDirector(scene)
+const gameAudio = new GameAudio()
 let matchConfig: MatchConfig = { ...DEFAULT_MATCH_CONFIG }
 const hud = new Hud(app, {
   onToggleMatchSettings: () => toggleMatchSettings(),
@@ -60,10 +62,34 @@ let manualClock =
   new URLSearchParams(window.location.search).get('clock') === 'manual'
 let lastFrameTime = performance.now()
 
+function unlockGameAudio(): void {
+  gameAudio.unlock()
+}
+
+window.addEventListener('pointerdown', unlockGameAudio, { capture: true })
+window.addEventListener('keydown', unlockGameAudio, { capture: true })
+function handlePageHide(event: PageTransitionEvent): void {
+  if (event.persisted) {
+    // BFCache 返回时模块不会重跑；保留手势监听，清掉离页前的旧音源即可。
+    gameAudio.reset()
+    return
+  }
+  window.removeEventListener('pointerdown', unlockGameAudio, { capture: true })
+  window.removeEventListener('keydown', unlockGameAudio, { capture: true })
+  window.removeEventListener('pagehide', handlePageHide)
+  gameAudio.dispose()
+}
+
+window.addEventListener('pagehide', handlePageHide)
+
 function syncUiAndMarkers(): void {
   const state = controller.getState()
   const timeline = controller.getTimelineSnapshot()
   const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const animation = animations.getSnapshot()
+  const pendingCaptureId = animation.active
+    ? animation.move.capturedId
+    : null
   const inputLocked = isBoardInputLocked(state)
   const selected = inputLocked ? undefined : controller.getSelectedPiece()
   const legalCount = inputLocked ? 0 : controller.getLegalMoves().length
@@ -79,6 +105,7 @@ function syncUiAndMarkers(): void {
     legalCount,
     {
       animationBusy: animations.isBusy,
+      pendingCaptureId,
       replayPlaying,
       timeline,
       moveLog: controller.getMoveLog(),
@@ -99,10 +126,12 @@ function snapEntireView(): void {
 }
 
 function restartGame(): void {
+  gameAudio.reset()
   aiCoordinator.cancel(true)
   stopReplay()
   controller.reset()
   simulationTime = 0
+  scene.setPresentationTime(simulationTime)
   clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -155,8 +184,15 @@ function toggleRuleHelp(): void {
 function advanceSimulation(milliseconds: number): void {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return
   simulationTime += milliseconds
+  scene.setPresentationTime(simulationTime)
   const animationWasBusy = animations.isBusy
   let changed = animations.advance(milliseconds)
+  if (animationWasBusy) {
+    gameAudio.dispatch({
+      type: 'animation-phase',
+      phase: animations.getSnapshot().phase,
+    })
+  }
   if (
     interactionFeedback &&
     simulationTime >= interactionFeedbackExpiresAt
@@ -255,6 +291,7 @@ function undoLastMove(): void {
         ? 1
         : 0
   if (undone === 0) return
+  gameAudio.reset()
   clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -279,6 +316,7 @@ function seekReplay(ply: number): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.seekReplay(ply)) return
+  gameAudio.reset()
   clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -293,6 +331,7 @@ function replayPrevious(): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.stepReplayBackward()) return
+  gameAudio.reset()
   clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -302,6 +341,7 @@ function replayNext(): void {
   if (animations.isBusy || replayPlaying) return
   aiCoordinator.cancel()
   if (!controller.stepReplayForward()) return
+  gameAudio.reset()
   clearInteractionFeedback()
   animations.cancelAndSnap(controller.getState())
   syncUiAndMarkers()
@@ -311,6 +351,7 @@ function returnToLive(): void {
   if (animations.isBusy) return
   aiCoordinator.cancel()
   stopReplay()
+  gameAudio.reset()
   clearInteractionFeedback()
   if (controller.returnToLive()) {
     animations.cancelAndSnap(controller.getState())
@@ -329,6 +370,7 @@ function toggleReplay(): void {
   }
 
   aiCoordinator.cancel()
+  gameAudio.reset()
   clearInteractionFeedback()
   hud.setHistoryOpen(true)
   if (!timeline.isReviewing) {
@@ -378,6 +420,9 @@ scene.renderer.domElement.addEventListener('pointerdown', (event) => {
   const selectedBefore = controller.getSelectedPiece()
   const result = controller.handleSquare(square.file, square.rank)
   if (result.type !== 'moved') {
+    if (result.type === 'selected') {
+      gameAudio.dispatch({ type: 'select' })
+    }
     scene.snapTo(controller.getState())
     const feedback = feedbackForInteraction(result, selectedBefore)
     if (feedback) {
@@ -397,7 +442,22 @@ function startMoveAnimation(move: Move): void {
   const committedState = controller.getState()
   // 不在此处 snap：旧 Mesh 必须保留给移动和受击退场演出。
   scene.setInteractionState(committedState, null, [])
-  if (!animations.start(move, committedState)) {
+  const started = animations.start(move, committedState)
+  const movingPiece = committedState.pieces.find(
+    (piece) => piece.id === move.pieceId,
+  )
+  const moveRecord = committedState.history.at(-1)
+  if (movingPiece) {
+    gameAudio.dispatch({
+      type: 'move-start',
+      pieceKind: movingPiece.kind,
+      capture: Boolean(move.capturedId),
+      givesCheck: moveRecord?.givesCheck ?? false,
+      terminal: committedState.status !== 'playing',
+    })
+  }
+  if (!started) {
+    gameAudio.dispatch({ type: 'animation-phase', phase: 'idle' })
     snapEntireView()
     aiCoordinator.finishAnimation()
     return
@@ -576,6 +636,10 @@ window.render_game_to_text = () => {
   const selected = controller.getSelectedPiece()
   const lastMove = state.history.at(-1)
   const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const animation = animations.getSnapshot()
+  const pendingCaptureId = animation.active
+    ? animation.move.capturedId
+    : null
   const inputLocked = isBoardInputLocked(state)
   const effectiveSelected = inputLocked ? undefined : selected
   const effectiveLegalMoves = inputLocked ? [] : controller.getLegalMoves()
@@ -620,8 +684,15 @@ window.render_game_to_text = () => {
         ruleHelpOpen: hud.isRuleHelpOpen,
       },
       ai,
-      animation: animations.getSnapshot(),
-      presentation: scene.getPresentationSnapshot(state),
+      audio: gameAudio.getSnapshot(),
+      animation,
+      presentation: {
+        ...scene.getPresentationSnapshot(state),
+        pendingCaptureId,
+        presentedCapturedCount: state.pieces.filter(
+          (piece) => piece.captured && piece.id !== pendingCaptureId,
+        ).length,
+      },
       timeline: {
         mode: timeline.isReviewing ? 'replay' : 'live',
         ...timeline,

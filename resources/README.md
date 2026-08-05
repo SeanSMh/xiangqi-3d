@@ -34,6 +34,18 @@ open /Users/bril/projects/xiangqi-3d/resources/reference/index.html
 整包约 **1 GB**，其中 `01_all_frames_native_60fps` 约 739MB。  
 若不需要逐帧分析，可只保留 `01_all_frames_1fps` + `02–06` + `docs`。
 
+## art/production/ — 当前美术定稿
+
+| 路径 | 说明 |
+|------|------|
+| `art/production/LOCKED_FEATURES.md` | 红黑角色不可漂移的锁定特征；后续重绘与建模必须遵守 |
+| `art/production/redesign/*_v3.jpg` | 红黑七棋种共 14 张当前全彩定稿，是运行时角色颜色图的唯一来源 |
+| `art/production/silhouettes/sil_*_alpha.png` | 从定稿角色转出的七棋种同源 Alpha 与剪影回退 |
+| `art/production/silhouettes/pair_character_silhouette_v3.png` | 全彩角色与剪影成对校对图 |
+| `art/production/**/archive_*` | 历史错位或失败资源，只供追溯，禁止进入运行时 |
+
+运行时副本位于 `public/assets/characters/` 与 `public/assets/silhouettes/`。代码只从 `public/assets/` 加载；修改定稿后需重新复制并核对尺寸、Alpha 网格及归档禁用规则。
+
 ## 后续可扩展
 
 ```
@@ -44,4 +56,4 @@ resources/
 └── design/             # 线框、UI 稿
 ```
 
-当前仅创建 `reference/`；开发产出资源时再补子目录即可。
+当前已有 `reference/` 与 `art/production/`；音频采用 Web Audio 实时合成，因此暂不需要运行时音频文件。GLB 角色试点可在后续阶段加入 `art/models/`。

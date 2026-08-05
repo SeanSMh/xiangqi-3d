@@ -24,7 +24,7 @@ xiangqi-3d/
 │   ├── scene/                # Three.js 棋盘 / 棋子 / 相机
 │   ├── ui/                   # HUD：行棋方、将军、战果
 │   ├── vfx/                  # 选中环、走子、吃子特效
-│   ├── audio/                # 音效
+│   ├── audio/                # Web Audio 原创合成音效
 │   └── types/                # 类型定义
 ├── resources/                # 设计与参考资源（不进运行时打包）
 │   ├── README.md
@@ -99,4 +99,6 @@ open resources/reference/index.html
 5. **Phase 4 ✅**：坐标棋谱、单步悔棋、逐手定位及确定性自动回放
 6. **Phase 5 ✅**：本地双人 / 人机模式、三级 AI、Worker 失效保护与整回合悔棋
 7. **Phase 6 ✅**：程序竞赛循环规则、自然限着、死局裁定、规则感知 AI 与统一中文提示
-8. **Phase 7**：将剪影逐步升级为 GLB 角色，并完成竖屏适配
+8. **Phase 7 ✅**：production v3 全彩角色、竞技场环境、战斗反馈、原创音效与战果展示
+9. **Phase 8**：竖屏相机、窄屏 HUD 与触控专项适配
+10. **Phase 9**：按棋种逐步试点并替换为 GLB 角色

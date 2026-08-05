@@ -1,3 +1,4 @@
+import { pieceLabel } from '../engine/board'
 import type { AiRuntimeSnapshot } from '../game/aiCoordinator'
 import type { MoveLogEntry } from '../game/controller'
 import {
@@ -6,7 +7,12 @@ import {
   type MatchConfig,
 } from '../game/match'
 import type { TimelineSnapshot } from '../game/timeline'
-import type { GameState, Piece, Side } from '../types/xiangqi'
+import type {
+  GameState,
+  Piece,
+  PieceKind,
+  Side,
+} from '../types/xiangqi'
 import type { GamePrompt } from './gamePrompt'
 import './hud.css'
 
@@ -28,6 +34,7 @@ interface HudActions {
 
 interface HudViewState {
   animationBusy: boolean
+  pendingCaptureId: string | null
   replayPlaying: boolean
   timeline: TimelineSnapshot
   moveLog: readonly MoveLogEntry[]
@@ -36,11 +43,46 @@ interface HudViewState {
   prompt: GamePrompt
 }
 
+interface SpoilsRowElements {
+  root: HTMLDivElement
+  list: HTMLDivElement
+  count: HTMLSpanElement
+}
+
+export interface SpoilsBadgeViewModel {
+  kind: PieceKind
+  side: Side
+  label: string
+  count: number
+  assetUrl: string
+}
+
+export interface SpoilsSideViewModel {
+  captor: Side
+  capturedSide: Side
+  total: number
+  badges: SpoilsBadgeViewModel[]
+  accessibleLabel: string
+}
+
+export interface SpoilsViewModel {
+  scoreLabel: string
+  total: number
+  red: SpoilsSideViewModel
+  black: SpoilsSideViewModel
+  signature: string
+}
+
 /** 左上局面、右上战果、底部操作、棋谱抽屉与终局提示。 */
 export class Hud {
   private turnLabelEl: HTMLSpanElement
   private checkEl: HTMLSpanElement
   private spoilsEl: HTMLDivElement
+  private spoilsScoreEl: HTMLSpanElement
+  private spoilsTotalEl: HTMLSpanElement
+  private spoilsLiveEl: HTMLSpanElement
+  private spoilsRows: Record<Side, SpoilsRowElements>
+  private spoilsSignature = ''
   private selectionEl: HTMLDivElement
   private gameStatusEl: HTMLDivElement
   private gameStatusVisibleEl: HTMLSpanElement
@@ -80,6 +122,36 @@ export class Hud {
     turnPanel.append(this.turnLabelEl, this.checkEl)
 
     this.spoilsEl = makePanel('spoils-panel')
+    this.spoilsEl.setAttribute('role', 'region')
+    this.spoilsEl.setAttribute('aria-labelledby', 'spoils-heading')
+    const spoilsHeader = document.createElement('div')
+    spoilsHeader.className = 'spoils-header'
+    const spoilsTitleBlock = document.createElement('div')
+    spoilsTitleBlock.className = 'spoils-title-block'
+    const spoilsHeading = document.createElement('span')
+    spoilsHeading.id = 'spoils-heading'
+    spoilsHeading.className = 'spoils-caption'
+    spoilsHeading.textContent = '战果 SPOILS'
+    this.spoilsTotalEl = document.createElement('span')
+    this.spoilsTotalEl.className = 'spoils-total'
+    spoilsTitleBlock.append(spoilsHeading, this.spoilsTotalEl)
+    this.spoilsScoreEl = document.createElement('span')
+    this.spoilsScoreEl.className = 'spoils-score'
+    spoilsHeader.append(spoilsTitleBlock, this.spoilsScoreEl)
+    const redSpoils = makeSpoilsRow('red')
+    const blackSpoils = makeSpoilsRow('black')
+    this.spoilsRows = { red: redSpoils, black: blackSpoils }
+    this.spoilsLiveEl = document.createElement('span')
+    this.spoilsLiveEl.className = 'xq-sr-only'
+    this.spoilsLiveEl.setAttribute('role', 'status')
+    this.spoilsLiveEl.setAttribute('aria-live', 'polite')
+    this.spoilsLiveEl.setAttribute('aria-atomic', 'true')
+    this.spoilsEl.append(
+      spoilsHeader,
+      redSpoils.root,
+      blackSpoils.root,
+      this.spoilsLiveEl,
+    )
 
     this.gameStatusEl = document.createElement('div')
     this.gameStatusEl.id = 'game-status'
@@ -418,6 +490,7 @@ export class Hud {
   ): void {
     const {
       animationBusy,
+      pendingCaptureId,
       replayPlaying,
       timeline,
       moveLog,
@@ -440,11 +513,7 @@ export class Hud {
     this.checkEl.textContent = `${sideLabel}被将`
     this.checkEl.style.display = state.inCheck ? 'inline-block' : 'none'
 
-    this.spoilsEl.innerHTML = `
-      <div class="spoils-caption" style="opacity:.58;font-size:10px;letter-spacing:.14em;margin-bottom:5px">战果 SPOILS</div>
-      <div style="font-weight:700;color:#f5d76e">${formatSpoils(state)}</div>
-      <div class="spoils-count" style="opacity:.5;font-size:10px;margin-top:5px">已吃 ${capturedCount(state)} 子</div>
-    `
+    this.renderSpoils(state, pendingCaptureId)
 
     this.gameStatusEl.dataset.tone = prompt.tone
     this.gameStatusEl.dataset.promptCode = prompt.code
@@ -567,6 +636,40 @@ export class Hud {
   private syncDifficultyAvailability(): void {
     this.difficultyFieldset.disabled = !this.modeAiRadio.checked
   }
+
+  private renderSpoils(
+    state: GameState,
+    pendingCaptureId: string | null,
+  ): void {
+    const view = createSpoilsViewModel(state, pendingCaptureId)
+    if (view.signature === this.spoilsSignature) return
+    this.spoilsSignature = view.signature
+
+    this.spoilsEl.dataset.capturedTotal = String(view.total)
+    this.spoilsEl.dataset.redSpoils = String(view.red.total)
+    this.spoilsEl.dataset.blackSpoils = String(view.black.total)
+    this.spoilsScoreEl.textContent = view.scoreLabel
+    this.spoilsTotalEl.textContent = `共 ${view.total} 子`
+
+    for (const side of ['red', 'black'] as const) {
+      const group = view[side]
+      const row = this.spoilsRows[side]
+      row.count.textContent = `${group.total} 子`
+      row.list.setAttribute('aria-label', group.accessibleLabel)
+      row.list.replaceChildren(
+        ...(group.badges.length > 0
+          ? group.badges.map(makeSpoilsBadge)
+          : [makeEmptySpoilsItem()]),
+      )
+    }
+
+    this.spoilsLiveEl.textContent = [
+      '战果更新',
+      view.scoreLabel,
+      view.red.accessibleLabel,
+      view.black.accessibleLabel,
+    ].join('。')
+  }
 }
 
 function makePanel(id: string): HTMLDivElement {
@@ -574,6 +677,73 @@ function makePanel(id: string): HTMLDivElement {
   panel.id = id
   panel.className = 'xq-panel'
   return panel
+}
+
+function makeSpoilsRow(side: Side): SpoilsRowElements {
+  const root = document.createElement('div')
+  root.className = 'spoils-row'
+  root.dataset.side = side
+
+  const heading = document.createElement('div')
+  heading.className = 'spoils-side-heading'
+  const label = document.createElement('span')
+  label.id = `spoils-${side}-label`
+  label.className = 'spoils-side-label'
+  label.textContent = side === 'red' ? '红方已吃' : '黑方已吃'
+  const count = document.createElement('span')
+  count.className = 'spoils-side-count'
+  heading.append(label, count)
+
+  const list = document.createElement('div')
+  list.className = 'spoils-badges'
+  list.setAttribute('role', 'list')
+  root.append(heading, list)
+  return { root, list, count }
+}
+
+function makeSpoilsBadge(view: SpoilsBadgeViewModel): HTMLSpanElement {
+  const badge = document.createElement('span')
+  badge.className = 'spoils-badge'
+  badge.dataset.side = view.side
+  badge.dataset.kind = view.kind
+  badge.setAttribute('role', 'listitem')
+  badge.setAttribute('aria-label', `${view.label} ${view.count} 枚`)
+
+  const image = document.createElement('img')
+  image.className = 'spoils-badge-image'
+  image.src = view.assetUrl
+  image.alt = ''
+  image.draggable = false
+  image.decoding = 'async'
+  image.setAttribute('aria-hidden', 'true')
+
+  const glyph = document.createElement('span')
+  glyph.className = 'spoils-badge-fallback'
+  glyph.textContent = view.label
+  glyph.setAttribute('aria-hidden', 'true')
+  image.addEventListener(
+    'error',
+    () => {
+      image.hidden = true
+      badge.classList.add('is-missing')
+    },
+    { once: true },
+  )
+
+  const count = document.createElement('span')
+  count.className = 'spoils-badge-count'
+  count.textContent = `×${view.count}`
+  count.setAttribute('aria-hidden', 'true')
+  badge.append(image, glyph, count)
+  return badge
+}
+
+function makeEmptySpoilsItem(): HTMLSpanElement {
+  const empty = document.createElement('span')
+  empty.className = 'spoils-empty'
+  empty.setAttribute('role', 'listitem')
+  empty.textContent = '暂无'
+  return empty
 }
 
 function makeButton(
@@ -664,14 +834,89 @@ function makeHistoryRow(
   return row
 }
 
-function capturedCount(state: GameState): number {
-  return state.pieces.filter((piece) => piece.captured).length
+const SPOILS_KIND_ORDER: readonly PieceKind[] = [
+  'chariot',
+  'horse',
+  'cannon',
+  'elephant',
+  'advisor',
+  'pawn',
+  'king',
+]
+
+/**
+ * 将权威局面的 captured 标记投影成纯展示模型。
+ * `red` 表示红方所得战果，因此其中展示的是被吃掉的黑方棋子。
+ */
+export function createSpoilsViewModel(
+  state: Pick<GameState, 'pieces'>,
+  pendingCaptureId: string | null = null,
+): SpoilsViewModel {
+  const buildSide = (captor: Side): SpoilsSideViewModel => {
+    const capturedSide: Side = captor === 'red' ? 'black' : 'red'
+    const captured = state.pieces.filter(
+      (piece) =>
+        piece.captured &&
+        piece.id !== pendingCaptureId &&
+        piece.side === capturedSide,
+    )
+    const badges = SPOILS_KIND_ORDER.flatMap((kind) => {
+      const count = captured.filter((piece) => piece.kind === kind).length
+      if (count === 0) return []
+      const label = pieceLabel(kind, capturedSide)
+      return [
+        {
+          kind,
+          side: capturedSide,
+          label,
+          count,
+          assetUrl: `/assets/badges/badge_${capturedSide}_${label}.png`,
+        },
+      ]
+    })
+    const detail =
+      badges.length > 0
+        ? badges.map((badge) => `${badge.label} ${badge.count}`).join('、')
+        : '暂无'
+    const captorLabel = captor === 'red' ? '红方' : '黑方'
+    const capturedSideLabel = capturedSide === 'red' ? '红方' : '黑方'
+    return {
+      captor,
+      capturedSide,
+      total: captured.length,
+      badges,
+      accessibleLabel: `${captorLabel}已吃${capturedSideLabel} ${captured.length} 子：${detail}`,
+    }
+  }
+
+  const red = buildSide('red')
+  const black = buildSide('black')
+  const scoreLabel = formatSpoils(state, pendingCaptureId)
+  const signature = [
+    scoreLabel,
+    ...red.badges.map((badge) => `r:${badge.kind}:${badge.count}`),
+    ...black.badges.map((badge) => `b:${badge.kind}:${badge.count}`),
+  ].join('|')
+  return {
+    scoreLabel,
+    total: red.total + black.total,
+    red,
+    black,
+    signature,
+  }
 }
 
-function formatSpoils(state: GameState): string {
+function formatSpoils(
+  state: Pick<GameState, 'pieces'>,
+  pendingCaptureId: string | null,
+): string {
   const score = (side: Side) =>
     state.pieces
-      .filter((piece) => piece.side === side && !piece.captured)
+      .filter(
+        (piece) =>
+          piece.side === side &&
+          (!piece.captured || piece.id === pendingCaptureId),
+      )
       .reduce((sum, piece) => sum + pieceValue(piece.kind), 0)
 
   const difference = score('red') - score('black')

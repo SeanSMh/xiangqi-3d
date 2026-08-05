@@ -7,19 +7,22 @@ import type {
   BoardCoord,
   GameState,
   Move,
+  Piece,
   PieceKind,
   Side,
 } from '../types/xiangqi'
 import { pieceLabel } from '../engine/board'
+import { ArenaEnvironment } from './arenaEnvironment'
+import { BattleFeedback } from './battleFeedback'
 import { applyUnifiedLighting, FACTION_COLORS } from './lighting'
 import {
-  getSilhouetteLayout,
+  CHARACTER_VISUAL_MODE,
+  getCharacterVisualSpec,
   PIECE_KINDS,
+  resolveCharacterLayerVisibility,
   ROLE_BASE_TOP,
   ROLE_RIM_SCALE,
-  ROLE_VISUAL_MODE,
   SILHOUETTE_COLORS,
-  SILHOUETTE_SPECS,
 } from './pieceVisuals'
 
 /** 格距：交点间距 */
@@ -41,8 +44,15 @@ export class BoardScene implements AnimationSurface {
   readonly camera: THREE.PerspectiveCamera
   readonly renderer: THREE.WebGLRenderer
   private pieceMeshes = new Map<string, THREE.Group>()
+  private capturedDisplayMeshes = new Map<string, THREE.Group>()
+  private arenaEnvironment = new ArenaEnvironment()
+  private battleFeedback = new BattleFeedback()
   private boardRoot = new THREE.Group()
   private markerRoot = new THREE.Group()
+  private checkMarker: THREE.Mesh<
+    THREE.RingGeometry,
+    THREE.MeshBasicMaterial
+  > | null = null
   private textureLoader = new THREE.TextureLoader()
   private textureCache = new Map<string, THREE.Texture>()
   private textureStatus = new Map<
@@ -72,13 +82,16 @@ export class BoardScene implements AnimationSurface {
   > | null = null
   private whiteImpact: THREE.Sprite | null = null
   private orangeImpact: THREE.Sprite | null = null
+  private presentationTimeMs = 0
+  private cameraRestPosition = new THREE.Vector3(0, 11, -10)
+  private cameraShakeOffset = new THREE.Vector3()
 
   constructor(container: HTMLElement) {
     const w = container.clientWidth
     const h = container.clientHeight
     this.camera = new THREE.PerspectiveCamera(42, w / h, 0.1, 100)
     // 固定斜俯视（对齐参考包镜头）
-    this.camera.position.set(0, 11, -10)
+    this.camera.position.copy(this.cameraRestPosition)
     this.camera.lookAt(0, 0, 0)
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -87,6 +100,8 @@ export class BoardScene implements AnimationSurface {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.1
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.domElement.id = 'game-canvas'
     this.renderer.domElement.setAttribute('aria-label', '中国象棋棋盘')
     this.renderer.domElement.style.touchAction = 'none'
@@ -94,9 +109,11 @@ export class BoardScene implements AnimationSurface {
     container.appendChild(this.renderer.domElement)
 
     applyUnifiedLighting(this.scene)
+    this.scene.add(this.arenaEnvironment.root)
     this.buildBoard()
     this.scene.add(this.boardRoot)
     this.boardRoot.add(this.markerRoot)
+    this.boardRoot.add(this.battleFeedback.root)
     this.ensureImpactSprites()
 
     window.addEventListener('resize', () => {
@@ -108,17 +125,83 @@ export class BoardScene implements AnimationSurface {
     })
   }
 
+  setPresentationTime(timeMs: number): void {
+    this.presentationTimeMs = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0
+    this.arenaEnvironment.update(this.presentationTimeMs)
+  }
+
   private buildBoard() {
     const base = new THREE.Mesh(
-      new THREE.BoxGeometry(BOARD_W + 1.2, 0.15, BOARD_H + 1.2),
+      new THREE.BoxGeometry(BOARD_W + 1.35, 0.3, BOARD_H + 1.35),
       new THREE.MeshStandardMaterial({
-        color: 0x211822,
-        metalness: 0.38,
-        roughness: 0.58,
+        color: 0x151620,
+        metalness: 0.64,
+        roughness: 0.42,
       }),
     )
-    base.position.y = -0.08
+    base.name = 'board-metal-plinth'
+    base.position.y = -0.22
+    base.castShadow = true
+    base.receiveShadow = true
     this.boardRoot.add(base)
+
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(BOARD_W + 0.72, 0.16, BOARD_H + 0.72),
+      new THREE.MeshStandardMaterial({
+        color: 0x35323a,
+        metalness: 0.12,
+        roughness: 0.9,
+      }),
+    )
+    slab.name = 'board-stone-slab'
+    slab.position.y = -0.06
+    slab.castShadow = true
+    slab.receiveShadow = true
+    this.boardRoot.add(slab)
+
+    const playingSurface = new THREE.Mesh(
+      new THREE.PlaneGeometry(BOARD_W + 0.12, BOARD_H + 0.12),
+      new THREE.MeshStandardMaterial({
+        color: 0x2b2b34,
+        metalness: 0.08,
+        roughness: 0.96,
+      }),
+    )
+    playingSurface.name = 'board-playing-surface'
+    playingSurface.rotation.x = -Math.PI / 2
+    playingSurface.position.y = 0.022
+    playingSurface.receiveShadow = true
+    this.boardRoot.add(playingSurface)
+
+    const trimMaterial = new THREE.MeshStandardMaterial({
+      color: 0xa98334,
+      emissive: 0x1f1606,
+      emissiveIntensity: 0.08,
+      metalness: 0.58,
+      roughness: 0.4,
+    })
+    const horizontalTrimGeometry = new THREE.BoxGeometry(
+      BOARD_W + 0.86,
+      0.07,
+      0.09,
+    )
+    const verticalTrimGeometry = new THREE.BoxGeometry(
+      0.09,
+      0.07,
+      BOARD_H + 0.86,
+    )
+    for (const z of [-BOARD_H / 2 - 0.37, BOARD_H / 2 + 0.37]) {
+      const trim = new THREE.Mesh(horizontalTrimGeometry, trimMaterial)
+      trim.position.set(0, 0.035, z)
+      trim.castShadow = true
+      this.boardRoot.add(trim)
+    }
+    for (const x of [-BOARD_W / 2 - 0.37, BOARD_W / 2 + 0.37]) {
+      const trim = new THREE.Mesh(verticalTrimGeometry, trimMaterial)
+      trim.position.set(x, 0.035, 0)
+      trim.castShadow = true
+      this.boardRoot.add(trim)
+    }
 
     const lineMat = new THREE.LineBasicMaterial({ color: 0xc9a227 })
     const points: THREE.Vector3[] = []
@@ -162,8 +245,25 @@ export class BoardScene implements AnimationSurface {
       }),
     )
     river.rotation.x = -Math.PI / 2
-    river.position.set(0, 0.02, 0)
+    river.position.set(0, 0.028, 0)
     this.boardRoot.add(river)
+
+    const typography = new THREE.Mesh(
+      new THREE.PlaneGeometry(BOARD_W + 1.05, BOARD_H + 1.05),
+      new THREE.MeshBasicMaterial({
+        map: createBoardTypographyTexture(),
+        transparent: true,
+        opacity: 0.86,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    typography.name = 'board-typography'
+    typography.rotation.x = -Math.PI / 2
+    typography.rotation.z = Math.PI
+    typography.position.y = 0.041
+    typography.renderOrder = 1
+    this.boardRoot.add(typography)
   }
 
   /** 根据权威局面同步棋子 mesh。 */
@@ -204,6 +304,55 @@ export class BoardScene implements AnimationSurface {
         this.pieceMeshes.delete(id)
       }
     }
+    this.syncCapturedDisplay(state)
+  }
+
+  private syncCapturedDisplay(state: GameState): void {
+    const captured = new Set<string>()
+    const bySide: Record<Side, Piece[]> = { red: [], black: [] }
+    for (const piece of state.pieces) {
+      if (!piece.captured) continue
+      captured.add(piece.id)
+      bySide[piece.side].push(piece)
+    }
+
+    for (const side of ['red', 'black'] as const) {
+      bySide[side].forEach((piece, index) => {
+        let token = this.capturedDisplayMeshes.get(piece.id)
+        if (!token) {
+          token = this.createPieceMesh(
+            piece.kind,
+            piece.side,
+            pieceLabel(piece.kind, piece.side),
+          )
+          token.name = `captured-display-${piece.id}`
+          token.userData.pieceId = piece.id
+          token.userData.pieceKind = piece.kind
+          token.userData.side = piece.side
+          token.userData.capturedDisplay = true
+          this.capturedDisplayMeshes.set(piece.id, token)
+          this.boardRoot.add(token)
+        }
+        const column = Math.floor(index / 8)
+        const row = index % 8
+        const direction = side === 'red' ? -1 : 1
+        token.position.set(
+          direction * (5.05 + column * 0.58),
+          0.05,
+          -3.15 + row * 0.88,
+        )
+        token.rotation.set(0, 0, 0)
+        token.scale.setScalar(0.46)
+        token.visible = true
+      })
+    }
+
+    for (const [id, token] of this.capturedDisplayMeshes) {
+      if (captured.has(id)) continue
+      this.boardRoot.remove(token)
+      disposeObject(token)
+      this.capturedDisplayMeshes.delete(id)
+    }
   }
 
   snapTo(state: GameState): void {
@@ -229,6 +378,22 @@ export class BoardScene implements AnimationSurface {
     const faction = FACTION_COLORS[side]
     const radius = (OCCUPANCY_DIAMETER / 2) * 0.9
 
+    const contactShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(radius * 1.06, 28),
+      new THREE.MeshBasicMaterial({
+        color: 0x050509,
+        transparent: true,
+        opacity: 0.42,
+        depthWrite: false,
+      }),
+    )
+    contactShadow.name = 'piece-contact-shadow'
+    contactShadow.rotation.x = -Math.PI / 2
+    contactShadow.position.y = 0.045
+    contactShadow.scale.set(1.15, 0.64, 1)
+    contactShadow.renderOrder = 1
+    g.add(contactShadow)
+
     const body = new THREE.Mesh(
       new THREE.CylinderGeometry(radius * 0.92, radius, 0.22, 32),
       new THREE.MeshStandardMaterial({
@@ -239,7 +404,10 @@ export class BoardScene implements AnimationSurface {
         emissiveIntensity: faction.emissiveIntensity,
       }),
     )
+    body.name = 'piece-base-body'
     body.position.y = 0.12
+    body.castShadow = true
+    body.receiveShadow = true
     g.add(body)
 
     // 使用 production 定稿底座 PNG；红黑只换材质，不更换棋种造型。
@@ -256,19 +424,22 @@ export class BoardScene implements AnimationSurface {
     face.position.y = 0.235
     g.add(face)
 
-    g.add(this.createSilhouetteCard(kind, side))
+    g.add(this.createCharacterCard(kind, side))
 
     return g
   }
 
-  private createSilhouetteCard(kind: PieceKind, side: Side): THREE.Group {
-    const spec = SILHOUETTE_SPECS[kind]
-    const layout = getSilhouetteLayout(kind)
-    const texture = this.loadTexture(spec.assetUrl)
+  private createCharacterCard(kind: PieceKind, side: Side): THREE.Group {
+    const spec = getCharacterVisualSpec(side, kind)
+    const layout = spec.layout
+    const maskTexture = this.loadTexture(spec.alphaAssetUrl)
+    const colorTexture = this.loadTexture(spec.colorAssetUrl)
     const card = new THREE.Group()
     card.name = 'role-billboard'
     card.position.y = ROLE_BASE_TOP
-    card.userData.assetUrl = spec.assetUrl
+    card.userData.assetUrl = spec.colorAssetUrl
+    card.userData.maskAssetUrl = spec.alphaAssetUrl
+    card.userData.fallbackAssetUrl = spec.fallbackAssetUrl
     card.userData.kind = kind
     card.userData.side = side
 
@@ -283,30 +454,64 @@ export class BoardScene implements AnimationSurface {
     )
     const rim = new THREE.Mesh(
       rimGeometry,
-      createSilhouetteMaterial(texture, SILHOUETTE_COLORS[side].rim),
+      createSilhouetteMaterial(
+        maskTexture,
+        SILHOUETTE_COLORS[side].rim,
+      ),
     )
     rim.name = 'role-rim'
     rim.scale.setScalar(ROLE_RIM_SCALE)
     rim.renderOrder = 4
+    rim.visible = false
     card.add(rim)
 
-    const bodyGeometry = new THREE.PlaneGeometry(
+    const fallbackGeometry = new THREE.PlaneGeometry(
       layout.planeWidth,
       layout.planeHeight,
     )
-    bodyGeometry.translate(
+    fallbackGeometry.translate(
       layout.geometryOffsetX,
       layout.geometryOffsetY,
       0,
     )
-    const body = new THREE.Mesh(
-      bodyGeometry,
-      createSilhouetteMaterial(texture, SILHOUETTE_COLORS[side].body),
+    const fallback = new THREE.Mesh(
+      fallbackGeometry,
+      createSilhouetteMaterial(
+        maskTexture,
+        SILHOUETTE_COLORS[side].body,
+      ),
     )
-    body.name = 'role-body'
-    body.position.z = 0.008
-    body.renderOrder = 5
-    card.add(body)
+    fallback.name = 'role-fallback'
+    fallback.position.z = 0.008
+    fallback.renderOrder = 5
+    fallback.visible = false
+    card.add(fallback)
+
+    const geometricPlaceholder = createGeometricCharacterPlaceholder(
+      side,
+      spec.visibleHeight,
+    )
+    geometricPlaceholder.visible = true
+    card.add(geometricPlaceholder)
+
+    const colorGeometry = new THREE.PlaneGeometry(
+      layout.planeWidth,
+      layout.planeHeight,
+    )
+    colorGeometry.translate(
+      layout.geometryOffsetX,
+      layout.geometryOffsetY,
+      0,
+    )
+    const colorBody = new THREE.Mesh(
+      colorGeometry,
+      createCharacterCardMaterial(colorTexture, maskTexture),
+    )
+    colorBody.name = 'role-color-body'
+    colorBody.position.z = 0.012
+    colorBody.renderOrder = 6
+    colorBody.visible = false
+    card.add(colorBody)
 
     return card
   }
@@ -353,6 +558,7 @@ export class BoardScene implements AnimationSurface {
         move.capturedId ? 'capture' : 'legal',
       )
     }
+    this.setCheckState(state)
   }
 
   private addMarker(
@@ -376,6 +582,7 @@ export class BoardScene implements AnimationSurface {
       }),
     )
     marker.name = `${kind}-marker-${file}-${rank}`
+    marker.userData.markerKind = kind
     marker.rotation.x = -Math.PI / 2
     const position = fileRankToWorld(file, rank)
     marker.position.set(position.x, 0.035, position.z)
@@ -394,6 +601,42 @@ export class BoardScene implements AnimationSurface {
       }
     }
     this.markerRoot.clear()
+  }
+
+  private setCheckState(state: GameState): void {
+    if (!state.inCheck || state.status !== 'playing') {
+      if (this.checkMarker) this.checkMarker.visible = false
+      return
+    }
+    const king = state.pieces.find(
+      (piece) =>
+        !piece.captured &&
+        piece.side === state.sideToMove &&
+        piece.kind === 'king',
+    )
+    if (!king) return
+    if (!this.checkMarker) {
+      this.checkMarker = new THREE.Mesh(
+        new THREE.RingGeometry(0.43, 0.52, 48),
+        new THREE.MeshBasicMaterial({
+          color: 0xff3b30,
+          transparent: true,
+          opacity: 0.58,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: true,
+          toneMapped: false,
+          side: THREE.DoubleSide,
+        }),
+      )
+      this.checkMarker.name = 'king-in-check-pulse'
+      this.checkMarker.rotation.x = -Math.PI / 2
+      this.checkMarker.renderOrder = 3
+      this.boardRoot.add(this.checkMarker)
+    }
+    const position = fileRankToWorld(king.file, king.rank)
+    this.checkMarker.position.set(position.x, 0.052, position.z)
+    this.checkMarker.visible = true
   }
 
   private loadTexture(url: string): THREE.Texture {
@@ -421,35 +664,79 @@ export class BoardScene implements AnimationSurface {
   }
 
   getPresentationSnapshot(state: GameState) {
-    const silhouetteAssets = PIECE_KINDS.map(
-      (kind) => SILHOUETTE_SPECS[kind].assetUrl,
+    const colorAssets = (['red', 'black'] as const).flatMap((side) =>
+      PIECE_KINDS.map(
+        (kind) => getCharacterVisualSpec(side, kind).colorAssetUrl,
+      ),
+    )
+    const maskAssets = PIECE_KINDS.map(
+      (kind) => getCharacterVisualSpec('red', kind).alphaAssetUrl,
     )
     const renderedKinds = new Set<PieceKind>()
     let redInstances = 0
     let blackInstances = 0
+    let fallbackInstances = 0
+    let placeholderInstances = 0
     for (const mesh of this.pieceMeshes.values()) {
       const kind = mesh.userData.pieceKind as PieceKind | undefined
       if (kind) renderedKinds.add(kind)
       if (mesh.userData.side === 'red') redInstances += 1
       if (mesh.userData.side === 'black') blackInstances += 1
+      const card = mesh.getObjectByName('role-billboard')
+      if (
+        card?.getObjectByName('role-fallback')?.visible ||
+        card?.getObjectByName('role-geometric-placeholder')?.visible
+      ) {
+        fallbackInstances += 1
+      }
+      if (card?.getObjectByName('role-geometric-placeholder')?.visible) {
+        placeholderInstances += 1
+      }
     }
 
     return {
-      renderer: ROLE_VISUAL_MODE,
+      renderer: CHARACTER_VISUAL_MODE,
       assetRevision: 'locked-v3',
       billboard: 'cylindrical-y',
-      sharedShapeAcrossFactions: true,
+      sharedShapeAcrossFactions: false,
+      factionSpecificArt: true,
+      shadows: this.renderer.shadowMap.enabled,
+      checkPulseActive: Boolean(this.checkMarker?.visible),
+      environment: this.arenaEnvironment.getSnapshot(),
+      battleEffects: this.battleFeedback.getSnapshot(),
       logicalAlive: state.pieces.filter((piece) => !piece.captured).length,
       renderedInstances: this.pieceMeshes.size,
+      capturedDisplayInstances: this.capturedDisplayMeshes.size,
+      capturedDisplayBySide: {
+        red: [...this.capturedDisplayMeshes.values()].filter(
+          (mesh) => mesh.userData.side === 'red',
+        ).length,
+        black: [...this.capturedDisplayMeshes.values()].filter(
+          (mesh) => mesh.userData.side === 'black',
+        ).length,
+      },
       renderedBySide: { red: redInstances, black: blackInstances },
       renderedKinds: PIECE_KINDS.filter((kind) => renderedKinds.has(kind)),
-      readyAssets: silhouetteAssets.filter(
+      readyAssets: colorAssets.filter(
         (url) => this.textureStatus.get(url) === 'ready',
       ).length,
-      loadingAssets: silhouetteAssets.filter(
+      expectedAssets: colorAssets.length,
+      readyMasks: maskAssets.filter(
+        (url) => this.textureStatus.get(url) === 'ready',
+      ).length,
+      expectedMasks: maskAssets.length,
+      fallbackInstances,
+      placeholderInstances,
+      loadingAssets: colorAssets.filter(
         (url) => this.textureStatus.get(url) === 'loading',
       ),
-      failedAssets: silhouetteAssets.filter(
+      failedAssets: colorAssets.filter(
+        (url) => this.textureStatus.get(url) === 'failed',
+      ),
+      loadingMasks: maskAssets.filter(
+        (url) => this.textureStatus.get(url) === 'loading',
+      ),
+      failedMasks: maskAssets.filter(
         (url) => this.textureStatus.get(url) === 'failed',
       ),
     }
@@ -556,6 +843,7 @@ export class BoardScene implements AnimationSurface {
     this.ensureImpactSprites()
     const position = fileRankToWorld(square.file, square.rank)
     position.y = 0.62
+    this.battleFeedback.update(position, whiteProgress, orangeProgress)
 
     if (this.whiteImpact) {
       this.whiteImpact.position.copy(position)
@@ -612,6 +900,7 @@ export class BoardScene implements AnimationSurface {
     }
     if (this.whiteImpact) this.whiteImpact.visible = false
     if (this.orangeImpact) this.orangeImpact.visible = false
+    this.battleFeedback.clear()
   }
 
   private ensureImpactSprites(): void {
@@ -700,7 +989,11 @@ export class BoardScene implements AnimationSurface {
   }
 
   private orientCharacterBillboards(): void {
-    for (const root of this.pieceMeshes.values()) {
+    const roleRoots = [
+      ...this.pieceMeshes.values(),
+      ...this.capturedDisplayMeshes.values(),
+    ]
+    for (const root of roleRoots) {
       const card = root.getObjectByName('role-billboard')
       if (!card) continue
       root.getWorldPosition(this.billboardWorldPosition)
@@ -712,9 +1005,64 @@ export class BoardScene implements AnimationSurface {
     }
   }
 
+  private syncCharacterAssetVisibility(): void {
+    const roleRoots = [
+      ...this.pieceMeshes.values(),
+      ...this.capturedDisplayMeshes.values(),
+    ]
+    for (const root of roleRoots) {
+      const card = root.getObjectByName('role-billboard')
+      if (!card) continue
+      const colorBody = card.getObjectByName('role-color-body')
+      const fallback = card.getObjectByName('role-fallback')
+      const rim = card.getObjectByName('role-rim')
+      const placeholder = card.getObjectByName('role-geometric-placeholder')
+      const assetUrl = card.userData.assetUrl as string | undefined
+      const maskAssetUrl = card.userData.maskAssetUrl as string | undefined
+      const visibility = resolveCharacterLayerVisibility(
+        assetUrl ? this.textureStatus.get(assetUrl) : undefined,
+        maskAssetUrl ? this.textureStatus.get(maskAssetUrl) : undefined,
+      )
+      if (colorBody) colorBody.visible = visibility.colorBody
+      if (fallback) fallback.visible = visibility.silhouette
+      if (rim) rim.visible = visibility.rim
+      if (placeholder) placeholder.visible = visibility.geometricPlaceholder
+      card.userData.visualMode = visibility.colorBody
+        ? CHARACTER_VISUAL_MODE
+        : visibility.silhouette
+          ? 'production-v3-silhouette-fallback'
+          : 'geometric-placeholder'
+    }
+  }
+
+  private updateAmbientMotion(): void {
+    const wave = (Math.sin(this.presentationTimeMs * 0.007) + 1) / 2
+    for (const marker of this.markerRoot.children) {
+      const kind = marker.userData.markerKind as string | undefined
+      if (kind === 'select') {
+        marker.scale.setScalar(0.98 + wave * 0.08)
+      } else if (kind === 'capture') {
+        marker.scale.setScalar(1 + wave * 0.05)
+      }
+    }
+    if (this.checkMarker?.visible) {
+      this.checkMarker.scale.setScalar(1 + wave * 0.16)
+      this.checkMarker.material.opacity = 0.34 + wave * 0.38
+    }
+  }
+
   render() {
+    this.syncCharacterAssetVisibility()
+    this.updateAmbientMotion()
     this.orientCharacterBillboards()
+    this.battleFeedback.getCameraOffset(this.cameraShakeOffset)
+    this.camera.position
+      .copy(this.cameraRestPosition)
+      .add(this.cameraShakeOffset)
+    this.camera.lookAt(0, 0, 0)
     this.renderer.render(this.scene, this.camera)
+    this.camera.position.copy(this.cameraRestPosition)
+    this.camera.lookAt(0, 0, 0)
   }
 }
 
@@ -784,6 +1132,153 @@ function createSilhouetteMaterial(
   }
   material.customProgramCacheKey = () => 'production-v3-alpha-silhouette-v1'
   return material
+}
+
+function createCharacterCardMaterial(
+  colorTexture: THREE.Texture,
+  maskTexture: THREE.Texture,
+): THREE.MeshBasicMaterial {
+  const material = new THREE.MeshBasicMaterial({
+    map: colorTexture,
+    color: 0xffffff,
+    transparent: true,
+    opacity: 1,
+    alphaTest: 0.06,
+    depthTest: true,
+    depthWrite: true,
+    side: THREE.FrontSide,
+    toneMapped: false,
+  })
+  material.name = 'production-v3-color-card'
+  material.fog = false
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.roleAlphaMask = { value: maskTexture }
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_pars_fragment>',
+      `#include <map_pars_fragment>
+uniform sampler2D roleAlphaMask;`,
+    )
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+diffuseColor.a *= texture2D(roleAlphaMask, vMapUv).a;`,
+    )
+  }
+  material.customProgramCacheKey = () => 'production-v3-color-card-v1'
+  return material
+}
+
+function createBoardTypographyTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas')
+  canvas.width = 1024
+  canvas.height = 1152
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('无法创建棋盘文字纹理')
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height)
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.fillStyle = 'rgba(222, 186, 83, 0.92)'
+  context.shadowColor = 'rgba(255, 209, 92, 0.25)'
+  context.shadowBlur = 8
+  context.font =
+    '700 48px "Songti SC", "STSong", "Noto Serif CJK SC", serif'
+  context.fillText('楚  河', canvas.width * 0.31, canvas.height * 0.5)
+  context.fillText('汉  界', canvas.width * 0.69, canvas.height * 0.5)
+
+  context.shadowBlur = 4
+  context.fillStyle = 'rgba(221, 193, 112, 0.76)'
+  context.font =
+    '600 19px ui-monospace, "SFMono-Regular", Menlo, monospace'
+  const horizontalMargin = 94
+  const verticalMargin = 76
+  for (let file = 0; file <= 8; file += 1) {
+    const x =
+      horizontalMargin +
+      (file / 8) * (canvas.width - horizontalMargin * 2)
+    context.fillText(String(file + 1), x, verticalMargin * 0.48)
+    context.fillText(
+      String(9 - file),
+      x,
+      canvas.height - verticalMargin * 0.48,
+    )
+  }
+
+  context.fillStyle = 'rgba(155, 188, 222, 0.55)'
+  context.font =
+    '500 14px ui-monospace, "SFMono-Regular", Menlo, monospace'
+  for (let rank = 0; rank <= 9; rank += 1) {
+    const y =
+      verticalMargin +
+      (rank / 9) * (canvas.height - verticalMargin * 2)
+    const label = String(10 - rank)
+    context.fillText(label, horizontalMargin * 0.38, y)
+    context.fillText(label, canvas.width - horizontalMargin * 0.38, y)
+  }
+
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.name = 'board-typography-v1'
+  texture.colorSpace = THREE.SRGBColorSpace
+  texture.needsUpdate = true
+  return texture
+}
+
+function createGeometricCharacterPlaceholder(
+  side: Side,
+  visibleHeight: number,
+): THREE.Group {
+  const group = new THREE.Group()
+  group.name = 'role-geometric-placeholder'
+  const height = Math.max(0.62, visibleHeight * 0.82)
+  const width = Math.min(0.52, height * 0.5)
+  const shape = new THREE.Shape()
+  shape.moveTo(-width * 0.22, 0)
+  shape.lineTo(-width * 0.42, height * 0.13)
+  shape.lineTo(-width * 0.5, height * 0.56)
+  shape.lineTo(-width * 0.3, height * 0.82)
+  shape.lineTo(0, height)
+  shape.lineTo(width * 0.3, height * 0.82)
+  shape.lineTo(width * 0.5, height * 0.56)
+  shape.lineTo(width * 0.42, height * 0.13)
+  shape.lineTo(width * 0.22, 0)
+  shape.closePath()
+
+  const geometry = new THREE.ShapeGeometry(shape)
+  const rim = new THREE.Mesh(
+    geometry,
+    new THREE.MeshBasicMaterial({
+      color: SILHOUETTE_COLORS[side].rim,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    }),
+  )
+  rim.name = 'geometric-placeholder-rim'
+  rim.scale.set(1.09, 1.045, 1)
+  rim.renderOrder = 4
+  group.add(rim)
+
+  const body = new THREE.Mesh(
+    geometry.clone(),
+    new THREE.MeshBasicMaterial({
+      color: SILHOUETTE_COLORS[side].body,
+      transparent: true,
+      opacity: 0.96,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    }),
+  )
+  body.name = 'geometric-placeholder-body'
+  body.position.z = 0.009
+  body.scale.set(0.9, 0.94, 1)
+  body.renderOrder = 5
+  group.add(body)
+  return group
 }
 
 function disposeObject(root: THREE.Object3D): void {

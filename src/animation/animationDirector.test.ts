@@ -151,11 +151,22 @@ describe('AnimationDirector', () => {
     director.advance(1)
     expect(director.getSnapshot()).toMatchObject({
       phase: 'impact',
+      hitStop: { durationMs: 65, active: true },
       vfx: { kind: 'white-cyan-impact', active: true },
     })
     expect(surface.whiteImpactProgress).toBeGreaterThan(0)
 
-    director.advance(249)
+    const frozenAttacker = surface.poses.get('rook')!
+    const frozenVictim = surface.poses.get('victim')!
+    director.advance(60)
+    expect(director.getSnapshot()).toMatchObject({
+      phase: 'impact',
+      hitStop: { active: true },
+    })
+    expect(surface.poses.get('rook')).toEqual(frozenAttacker)
+    expect(surface.poses.get('victim')).toEqual(frozenVictim)
+
+    director.advance(189)
     const snapshot = director.getSnapshot()
     expect(snapshot).toMatchObject({
       active: true,
