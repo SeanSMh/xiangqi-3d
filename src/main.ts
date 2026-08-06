@@ -104,6 +104,7 @@ function handlePageShow(event: PageTransitionEvent): void {
   // BFCache 会保留 Three 场景和手势状态；恢复时丢弃离页前的旧时钟/触点。
   lastFrameTime = performance.now()
   boardTapGesture.cancel()
+  scene.setViewDragging(false)
   refitSceneToViewport()
   scene.setPresentationTime(simulationTime)
   syncUiAndMarkers()
@@ -442,28 +443,45 @@ async function toggleFullscreen(): Promise<void> {
 const boardCanvas = scene.renderer.domElement
 
 boardCanvas.addEventListener('pointerdown', (event) => {
-  if (!boardTapGesture.begin(event)) return
+  if (!boardTapGesture.begin(event)) {
+    scene.setViewDragging(boardTapGesture.isDragging)
+    return
+  }
+  scene.setViewDragging(false)
   event.preventDefault()
   boardCanvas.setPointerCapture(event.pointerId)
 })
 
 boardCanvas.addEventListener('pointermove', (event) => {
-  if (boardTapGesture.move(event)) event.preventDefault()
+  const movement = boardTapGesture.trackMove(event)
+  if (!movement.tracked) return
+  event.preventDefault()
+  if (movement.drag) {
+    scene.setViewDragging(true)
+    scene.rotateViewByCssDelta(movement.drag.deltaXCss)
+  }
 })
 
 boardCanvas.addEventListener('pointercancel', (event) => {
   boardTapGesture.cancel(event.pointerId)
+  scene.setViewDragging(boardTapGesture.isDragging)
 })
 
 boardCanvas.addEventListener('lostpointercapture', (event) => {
   boardTapGesture.cancel(event.pointerId)
+  scene.setViewDragging(boardTapGesture.isDragging)
 })
 
 boardCanvas.addEventListener('pointerup', (event) => {
+  const movement = boardTapGesture.trackMove(event)
+  if (movement.drag) {
+    scene.rotateViewByCssDelta(movement.drag.deltaXCss)
+  }
   const tap = boardTapGesture.end(event)
   if (boardCanvas.hasPointerCapture(event.pointerId)) {
     boardCanvas.releasePointerCapture(event.pointerId)
   }
+  scene.setViewDragging(boardTapGesture.isDragging)
   if (!tap) return
   event.preventDefault()
   handleBoardTap(tap.clientX, tap.clientY)
@@ -724,7 +742,7 @@ window.render_game_to_text = () => {
   return JSON.stringify(
     {
       coordinateSystem:
-        '红方视角下 file 0 在画面右侧、file 8 在左侧；rank 0 为红方底线，rank 9 为黑方底线',
+        '棋盘内部 file/rank 固定：rank 0 为红方底线、rank 9 为黑方底线；旋转后屏幕左右由 presentation.cameraView 决定',
       status: state.status,
       sideToMove: state.sideToMove,
       inCheck: state.inCheck,
@@ -737,8 +755,10 @@ window.render_game_to_text = () => {
       boardInputEnabled: !inputLocked,
       input: {
         boardPointerCommit: 'primary-pointerup-tap',
+        cameraOrbit: 'primary-drag-horizontal',
         dragThresholdCssPx: BOARD_TAP_MOVE_THRESHOLD_PX,
         activePointerId: boardTapGesture.activePointerId,
+        viewDragging: boardTapGesture.isDragging,
         fullscreenAvailable,
       },
       rules: {
@@ -904,5 +924,5 @@ function loop(now: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 对局系统已就绪：支持本地双人、三级 AI、整回合悔棋与棋谱回放。',
+  '[xiangqi-3d] 对局系统已就绪：支持拖动环绕、本地双人、三级 AI、整回合悔棋与棋谱回放。',
 )

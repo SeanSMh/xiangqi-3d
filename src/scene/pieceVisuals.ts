@@ -2,9 +2,14 @@ import type { PieceKind, Side } from '../types/xiangqi'
 
 export const ROLE_VISUAL_MODE = 'production-v3-silhouette' as const
 export const CHARACTER_VISUAL_MODE = 'production-v3-color-card' as const
+export const CHARACTER_BACK_VISUAL_MODE =
+  'production-v3-silhouette-facing-away' as const
 export const ROLE_BASE_TOP = 0.24
 export const MAX_ROLE_FOOTPRINT = 0.85
 export const ROLE_RIM_SCALE = 1.055
+export const CHARACTER_VIEW_HYSTERESIS = 0.12
+
+export type CharacterViewMode = 'front' | 'back'
 
 export const PIECE_KINDS = [
   'king',
@@ -91,6 +96,45 @@ export interface CharacterLayerVisibility {
   silhouette: boolean
   rim: boolean
   geometricPlaceholder: boolean
+}
+
+/**
+ * 红方向 +Z、黑方向 -Z。相机位于阵营正前方时显示全彩正面，位于背后时
+ * 显示独立背面层；侧视死区沿用上次结果，避免环绕到 90° 时来回闪烁。
+ */
+export function resolveFactionCharacterViewMode(
+  side: Side,
+  cameraBearingFromBoard: { readonly x: number; readonly z: number },
+  previous?: CharacterViewMode,
+): CharacterViewMode {
+  const length = Math.hypot(
+    cameraBearingFromBoard.x,
+    cameraBearingFromBoard.z,
+  )
+  if (!Number.isFinite(length) || length < 0.000001) {
+    return previous ?? (side === 'red' ? 'back' : 'front')
+  }
+  const bearingZ = cameraBearingFromBoard.z / length
+  const facingDot = side === 'red' ? bearingZ : -bearingZ
+  if (facingDot > CHARACTER_VIEW_HYSTERESIS) return 'front'
+  if (facingDot < -CHARACTER_VIEW_HYSTERESIS) return 'back'
+  return previous ?? (facingDot >= 0 ? 'front' : 'back')
+}
+
+/** 棋盘文字朝向当前所在半场的观者；侧视临界区与角色翻面共用滞回。 */
+export function resolveBoardViewerSide(
+  cameraBearingFromBoard: { readonly x: number; readonly z: number },
+  previous: Side = 'red',
+): Side {
+  const previousRedView: CharacterViewMode =
+    previous === 'red' ? 'back' : 'front'
+  return resolveFactionCharacterViewMode(
+    'red',
+    cameraBearingFromBoard,
+    previousRedView,
+  ) === 'back'
+    ? 'red'
+    : 'black'
 }
 
 /**

@@ -13,10 +13,23 @@ export interface BoardTap {
   clientY: number
 }
 
+export interface BoardDrag {
+  deltaXCss: number
+  deltaYCss: number
+  justStarted: boolean
+}
+
+export interface BoardPointerMove {
+  tracked: boolean
+  drag: BoardDrag | null
+}
+
 interface ActivePointer {
   pointerId: number
   startX: number
   startY: number
+  lastX: number
+  lastY: number
   moved: boolean
 }
 
@@ -33,6 +46,10 @@ export class BoardTapGesture {
 
   get activePointerId(): number | null {
     return this.active?.pointerId ?? null
+  }
+
+  get isDragging(): boolean {
+    return this.active?.moved ?? false
   }
 
   begin(sample: PointerSample): boolean {
@@ -53,20 +70,58 @@ export class BoardTapGesture {
       pointerId: sample.pointerId,
       startX: sample.clientX,
       startY: sample.clientY,
+      lastX: sample.clientX,
+      lastY: sample.clientY,
       moved: false,
     }
     return true
   }
 
   move(sample: PointerSample): boolean {
+    return this.trackMove(sample).tracked
+  }
+
+  /**
+   * 10px 死区内只跟踪 tap；越过死区后输出逐事件增量，由相机消费。
+   * 这样轻触不会先轻微转镜头，拖动也永远不会在 pointerup 误走棋。
+   */
+  trackMove(sample: PointerSample): BoardPointerMove {
     const active = this.active
-    if (!active || sample.pointerId !== active.pointerId) return false
-    const distance = Math.hypot(
-      sample.clientX - active.startX,
-      sample.clientY - active.startY,
-    )
+    if (
+      !active ||
+      sample.pointerId !== active.pointerId ||
+      !Number.isFinite(sample.clientX) ||
+      !Number.isFinite(sample.clientY)
+    ) {
+      return { tracked: false, drag: null }
+    }
+    const incrementalDeltaXCss = sample.clientX - active.lastX
+    const incrementalDeltaYCss = sample.clientY - active.lastY
+    const totalDeltaXCss = sample.clientX - active.startX
+    const totalDeltaYCss = sample.clientY - active.startY
+    const distance = Math.hypot(totalDeltaXCss, totalDeltaYCss)
+    const wasDragging = active.moved
     if (distance > this.moveThresholdPx) active.moved = true
-    return true
+    const justStarted = active.moved && !wasDragging
+    const deltaXCss = justStarted
+      ? totalDeltaXCss
+      : incrementalDeltaXCss
+    const deltaYCss = justStarted
+      ? totalDeltaYCss
+      : incrementalDeltaYCss
+    active.lastX = sample.clientX
+    active.lastY = sample.clientY
+    return {
+      tracked: true,
+      drag:
+        active.moved && (deltaXCss !== 0 || deltaYCss !== 0)
+          ? {
+              deltaXCss,
+              deltaYCss,
+              justStarted,
+            }
+          : null,
+    }
   }
 
   end(sample: PointerSample): BoardTap | null {

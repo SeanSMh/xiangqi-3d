@@ -15,10 +15,16 @@ import { pieceLabel } from '../engine/board'
 import { ArenaEnvironment } from './arenaEnvironment'
 import { BattleFeedback } from './battleFeedback'
 import {
+  cameraOrbitYawAfterDrag,
+  resolveCameraOrbitFogRange,
+  resolveCameraOrbitPosition,
+} from './cameraOrbit'
+import {
   applyUnifiedLighting,
   configureKeyLightShadow,
   FACTION_COLORS,
   invalidateShadowAwareMaterials,
+  LIGHTING,
 } from './lighting'
 import {
   commitPresentationTextureReplacement,
@@ -32,13 +38,17 @@ import {
   type PresentationTextureStatus,
 } from './presentationProfile'
 import {
+  CHARACTER_BACK_VISUAL_MODE,
   CHARACTER_VISUAL_MODE,
   getCharacterVisualSpec,
   PIECE_KINDS,
+  resolveBoardViewerSide,
+  resolveFactionCharacterViewMode,
   resolveCharacterLayerVisibility,
   ROLE_BASE_TOP,
   ROLE_RIM_SCALE,
   SILHOUETTE_COLORS,
+  type CharacterViewMode,
 } from './pieceVisuals'
 
 /** 格距：交点间距 */
@@ -76,7 +86,7 @@ export class BoardScene implements AnimationSurface {
   private textureActiveTier = new Map<string, CharacterAssetTier>()
   private reloadingTextures = new Set<string>()
   private failedTextureReloads = new Set<string>()
-  private billboardWorldPosition = new THREE.Vector3()
+  private billboardLocalCameraPosition = new THREE.Vector3()
   private pointer = new THREE.Vector2()
   private raycaster = new THREE.Raycaster()
   private boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
@@ -103,6 +113,21 @@ export class BoardScene implements AnimationSurface {
   private cameraRestPosition = new THREE.Vector3(0, 11, -10)
   private cameraTarget = new THREE.Vector3()
   private cameraShakeOffset = new THREE.Vector3()
+  private cameraOrbitOffset = new THREE.Vector3()
+  private orbitFitCamera = new THREE.PerspectiveCamera()
+  private orbitFitCandidate = new THREE.Vector3()
+  private orbitFitPoint = new THREE.Vector3()
+  private orbitBaselineBounds = { left: 0, right: 0, top: 0, bottom: 0 }
+  private orbitCandidateBounds = { left: 0, right: 0, top: 0, bottom: 0 }
+  private cameraYawOffsetRadians = 0
+  private cameraOrbitFramingScale = 1
+  private cameraViewDragging = false
+  private characterViewBySide: Record<Side, CharacterViewMode> = {
+    red: 'back',
+    black: 'front',
+  }
+  private boardTypography: THREE.Mesh | null = null
+  private boardViewerSide: Side = 'red'
   private presentationProfile: PresentationProfile
   private keyLight: THREE.DirectionalLight
   private resizeObserver: ResizeObserver | null = null
@@ -145,9 +170,12 @@ export class BoardScene implements AnimationSurface {
     this.renderer.shadowMap.autoUpdate =
       this.presentationProfile.renderer.shadowAutoUpdate
     this.renderer.domElement.id = 'game-canvas'
-    this.renderer.domElement.setAttribute('aria-label', '中国象棋棋盘')
-    this.renderer.domElement.style.touchAction = 'manipulation'
-    this.renderer.domElement.style.cursor = 'pointer'
+    this.renderer.domElement.setAttribute(
+      'aria-label',
+      '中国象棋棋盘，点按走棋，拖动旋转视角',
+    )
+    this.renderer.domElement.style.touchAction = 'none'
+    this.renderer.domElement.style.cursor = 'grab'
     container.appendChild(this.renderer.domElement)
 
     this.keyLight = applyUnifiedLighting(this.scene).key
@@ -205,10 +233,8 @@ export class BoardScene implements AnimationSurface {
 
     if (sizeChanged || framingChanged) {
       applyPresentationCameraProjection(this.camera, profile)
-      this.cameraRestPosition.copy(profile.camera.position)
       this.cameraTarget.copy(profile.camera.target)
-      this.camera.position.copy(this.cameraRestPosition)
-      this.camera.lookAt(this.cameraTarget)
+      this.updateCameraOrbitPose()
     }
     if (pixelRatioChanged) {
       this.renderer.setPixelRatio(profile.renderer.pixelRatio)
@@ -251,6 +277,55 @@ export class BoardScene implements AnimationSurface {
   setPresentationTime(timeMs: number): void {
     this.presentationTimeMs = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0
     this.arenaEnvironment.update(this.presentationTimeMs)
+  }
+
+  /** 由统一 pointer 手势驱动，仅环绕 Y 轴，不改变 profile 的俯角与投影。 */
+  rotateViewByCssDelta(deltaXCss: number): boolean {
+    const nextYaw = cameraOrbitYawAfterDrag(
+      this.cameraYawOffsetRadians,
+      deltaXCss,
+    )
+    if (nextYaw === this.cameraYawOffsetRadians) return false
+    this.cameraYawOffsetRadians = nextYaw
+    this.updateCameraOrbitPose()
+    return true
+  }
+
+  setViewDragging(dragging: boolean): void {
+    this.cameraViewDragging = dragging
+    this.renderer.domElement.style.cursor = dragging ? 'grabbing' : 'grab'
+  }
+
+  private updateCameraOrbitPose(): void {
+    const profileCamera = this.presentationProfile.camera
+    this.cameraTarget.copy(profileCamera.target)
+    const baseOrbitPosition = resolveCameraOrbitPosition(
+      profileCamera.position,
+      profileCamera.target,
+      this.cameraYawOffsetRadians,
+    )
+    const offset = this.cameraOrbitOffset.set(
+      baseOrbitPosition.x - this.cameraTarget.x,
+      baseOrbitPosition.y - this.cameraTarget.y,
+      baseOrbitPosition.z - this.cameraTarget.z,
+    )
+    this.cameraOrbitFramingScale = this.resolveOrbitFramingScale(offset)
+    const fogRange = resolveCameraOrbitFogRange(
+      LIGHTING.fogNear,
+      LIGHTING.fogFar,
+      this.cameraOrbitFramingScale,
+    )
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.near = fogRange.near
+      this.scene.fog.far = fogRange.far
+    }
+    this.cameraRestPosition
+      .copy(this.cameraTarget)
+      .addScaledVector(offset, this.cameraOrbitFramingScale)
+    this.camera.position.copy(this.cameraRestPosition)
+    this.camera.lookAt(this.cameraTarget)
+    this.camera.updateMatrixWorld(true)
+    this.syncViewerFacing()
   }
 
   private buildBoard() {
@@ -386,6 +461,7 @@ export class BoardScene implements AnimationSurface {
     typography.rotation.z = Math.PI
     typography.position.y = 0.041
     typography.renderOrder = 1
+    this.boardTypography = typography
     this.boardRoot.add(typography)
   }
 
@@ -645,6 +721,11 @@ export class BoardScene implements AnimationSurface {
     const rect = this.renderer.domElement.getBoundingClientRect()
     if (!rect.width || !rect.height) return null
 
+    // 规则拾取只使用无震屏的轨道相机，避免命中演出改变落点射线。
+    this.camera.position.copy(this.cameraRestPosition)
+    this.camera.lookAt(this.cameraTarget)
+    this.camera.updateMatrixWorld(true)
+
     this.pointer.set(
       ((clientX - rect.left) / rect.width) * 2 - 1,
       -((clientY - rect.top) / rect.height) * 2 + 1,
@@ -893,33 +974,64 @@ export class BoardScene implements AnimationSurface {
     let blackInstances = 0
     let fallbackInstances = 0
     let placeholderInstances = 0
+    let backViewInstances = 0
     for (const mesh of this.pieceMeshes.values()) {
       const kind = mesh.userData.pieceKind as PieceKind | undefined
       if (kind) renderedKinds.add(kind)
       if (mesh.userData.side === 'red') redInstances += 1
       if (mesh.userData.side === 'black') blackInstances += 1
       const card = mesh.getObjectByName('role-billboard')
-      if (
-        card?.getObjectByName('role-fallback')?.visible ||
-        card?.getObjectByName('role-geometric-placeholder')?.visible
-      ) {
+      const placeholderVisible =
+        card?.getObjectByName('role-geometric-placeholder')?.visible === true
+      const loadingFallbackVisible =
+        card?.userData.viewMode !== 'back' &&
+        card?.getObjectByName('role-fallback')?.visible === true
+      if (loadingFallbackVisible || placeholderVisible) {
         fallbackInstances += 1
       }
-      if (card?.getObjectByName('role-geometric-placeholder')?.visible) {
+      if (placeholderVisible) {
         placeholderInstances += 1
       }
+      if (card?.userData.viewMode === 'back') backViewInstances += 1
     }
 
     return {
       renderer: CHARACTER_VISUAL_MODE,
       assetRevision: 'locked-v3',
-      billboard: 'cylindrical-y',
+      billboard: 'cylindrical-y-with-faction-facing',
       sharedShapeAcrossFactions: false,
       factionSpecificArt: true,
       shadows: this.renderer.shadowMap.enabled,
       presentationProfile: this.presentationProfile,
       viewport: this.presentationProfile.viewport,
       cameraProfile: this.presentationProfile.camera,
+      cameraView: {
+        interaction: 'primary-drag-horizontal-orbit',
+        yawOffsetRadians:
+          Math.round(this.cameraYawOffsetRadians * 1_000_000) / 1_000_000,
+        yawOffsetDegrees:
+          Math.round(
+            ((this.cameraYawOffsetRadians * 180) / Math.PI) * 10,
+          ) / 10,
+        framingScale:
+          Math.round(this.cameraOrbitFramingScale * 10_000) / 10_000,
+        dragging: this.cameraViewDragging,
+        position: {
+          x: this.cameraRestPosition.x,
+          y: this.cameraRestPosition.y,
+          z: this.cameraRestPosition.z,
+        },
+        target: {
+          x: this.cameraTarget.x,
+          y: this.cameraTarget.y,
+          z: this.cameraTarget.z,
+        },
+        characterViewBySide: { ...this.characterViewBySide },
+        boardTypography: {
+          viewerSide: this.boardViewerSide,
+          rotationDegrees: this.boardViewerSide === 'red' ? 180 : 0,
+        },
+      },
       textureRuntime: {
         requestedTier: this.presentationProfile.textures.assetTier,
         activeTier:
@@ -970,6 +1082,7 @@ export class BoardScene implements AnimationSurface {
       expectedMasks: maskAssets.length,
       fallbackInstances,
       placeholderInstances,
+      backViewInstances,
       loadingAssets: colorAssets.filter(
         (url) => this.textureStatus.get(url) === 'loading',
       ),
@@ -985,6 +1098,125 @@ export class BoardScene implements AnimationSurface {
     }
   }
 
+  private resolveOrbitFramingScale(rotatedOffset: THREE.Vector3): number {
+    applyPresentationCameraProjection(
+      this.orbitFitCamera,
+      this.presentationProfile,
+    )
+    this.measureOrbitProjectedBounds(
+      this.presentationProfile.camera.position,
+      this.orbitBaselineBounds,
+    )
+    const { width, height } = this.presentationProfile.viewport
+    const insets = this.presentationProfile.framingInsetsCss
+    this.orbitBaselineBounds.left = Math.max(
+      this.orbitBaselineBounds.left,
+      insets.left,
+    )
+    this.orbitBaselineBounds.right = Math.min(
+      this.orbitBaselineBounds.right,
+      width - insets.right,
+    )
+    this.orbitBaselineBounds.top = Math.max(
+      this.orbitBaselineBounds.top,
+      insets.top,
+    )
+    this.orbitBaselineBounds.bottom = Math.min(
+      this.orbitBaselineBounds.bottom,
+      height - insets.bottom,
+    )
+    const clearsAt = (scale: number) => {
+      this.orbitFitCandidate
+        .copy(this.cameraTarget)
+        .addScaledVector(rotatedOffset, scale)
+      return this.orbitPositionClearsFraming(this.orbitFitCandidate)
+    }
+
+    if (clearsAt(1)) return 1
+    let low = 1
+    let high = 1.25
+    while (high < 4 && !clearsAt(high)) high *= 1.25
+    if (!clearsAt(high)) return high
+    for (let iteration = 0; iteration < 12; iteration += 1) {
+      const middle = (low + high) / 2
+      if (clearsAt(middle)) high = middle
+      else low = middle
+    }
+    return high
+  }
+
+  /** 高频拖动路径复用相机与投影点，避免每次二分都 clone/分配对象。 */
+  private orbitPositionClearsFraming(cameraPosition: THREE.Vector3): boolean {
+    this.measureOrbitProjectedBounds(
+      cameraPosition,
+      this.orbitCandidateBounds,
+    )
+    const bounds = this.orbitCandidateBounds
+    const safe = this.orbitBaselineBounds
+    return (
+      bounds.left >= safe.left &&
+      bounds.right <= safe.right &&
+      bounds.top >= safe.top &&
+      bounds.bottom <= safe.bottom
+    )
+  }
+
+  private measureOrbitProjectedBounds(
+    cameraPosition: {
+      readonly x: number
+      readonly y: number
+      readonly z: number
+    },
+    bounds: { left: number; right: number; top: number; bottom: number },
+  ): void {
+    const camera = this.orbitFitCamera
+    camera.position.set(cameraPosition.x, cameraPosition.y, cameraPosition.z)
+    camera.lookAt(this.cameraTarget)
+    camera.updateMatrixWorld(true)
+
+    const { width, height } = this.presentationProfile.viewport
+    const edgeX = BOARD_W / 2 + 0.47
+    const edgeZ = BOARD_H / 2 + 0.47
+    let left = Number.POSITIVE_INFINITY
+    let right = Number.NEGATIVE_INFINITY
+    let top = Number.POSITIVE_INFINITY
+    let bottom = Number.NEGATIVE_INFINITY
+    for (let xSign = -1; xSign <= 1; xSign += 2) {
+      for (let zSign = -1; zSign <= 1; zSign += 2) {
+        const projected = this.orbitFitPoint
+          .set(xSign * edgeX, 0.05, zSign * edgeZ)
+          .project(camera)
+        const x = ((projected.x + 1) / 2) * width
+        const y = ((1 - projected.y) / 2) * height
+        left = Math.min(left, x)
+        right = Math.max(right, x)
+        top = Math.min(top, y)
+        bottom = Math.max(bottom, y)
+      }
+    }
+    bounds.left = left
+    bounds.right = right
+    bounds.top = top
+    bounds.bottom = bottom
+  }
+
+  private createBoardProjector(cameraPosition: THREE.Vector3) {
+    const { width, height } = this.presentationProfile.viewport
+    const camera = this.camera.clone()
+    camera.position.copy(cameraPosition)
+    camera.lookAt(this.cameraTarget)
+    applyPresentationCameraProjection(camera, this.presentationProfile)
+    camera.updateMatrixWorld(true)
+
+    return (x: number, z: number) => {
+      const point = new THREE.Vector3(x, 0.05, z).project(camera)
+      return {
+        x: ((point.x + 1) / 2) * width,
+        y: ((1 - point.y) / 2) * height,
+      }
+    }
+  }
+
   private measureBoardProjection(): {
     bounds: { left: number; right: number; top: number; bottom: number }
     safeBounds: { left: number; right: number; top: number; bottom: number }
@@ -994,33 +1226,8 @@ export class BoardScene implements AnimationSurface {
     clearOfHud: boolean
   } {
     const { width, height } = this.presentationProfile.viewport
-    const camera = this.camera.clone()
-    camera.position.copy(this.cameraRestPosition)
-    camera.lookAt(this.cameraTarget)
-    applyPresentationCameraProjection(camera, this.presentationProfile)
-    camera.updateMatrixWorld(true)
-
-    const project = (x: number, z: number) => {
-      const point = new THREE.Vector3(x, 0.05, z).project(camera)
-      return {
-        x: ((point.x + 1) / 2) * width,
-        y: ((1 - point.y) / 2) * height,
-      }
-    }
-    const edgeX = BOARD_W / 2 + 0.47
-    const edgeZ = BOARD_H / 2 + 0.47
-    const corners = [
-      project(-edgeX, -edgeZ),
-      project(edgeX, -edgeZ),
-      project(-edgeX, edgeZ),
-      project(edgeX, edgeZ),
-    ]
-    const rawBounds = {
-      left: Math.min(...corners.map((point) => point.x)),
-      right: Math.max(...corners.map((point) => point.x)),
-      top: Math.min(...corners.map((point) => point.y)),
-      bottom: Math.max(...corners.map((point) => point.y)),
-    }
+    const project = this.createBoardProjector(this.cameraRestPosition)
+    const rawBounds = projectedBoardBounds(project)
 
     let horizontal = Number.POSITIVE_INFINITY
     let vertical = Number.POSITIVE_INFINITY
@@ -1329,7 +1536,31 @@ export class BoardScene implements AnimationSurface {
     return sprite
   }
 
+  private syncViewerFacing(): void {
+    const cameraBearing = {
+      x: this.cameraRestPosition.x - this.cameraTarget.x,
+      z: this.cameraRestPosition.z - this.cameraTarget.z,
+    }
+    for (const side of ['red', 'black'] as const) {
+      this.characterViewBySide[side] = resolveFactionCharacterViewMode(
+        side,
+        cameraBearing,
+        this.characterViewBySide[side],
+      )
+    }
+    this.boardViewerSide = resolveBoardViewerSide(
+      cameraBearing,
+      this.boardViewerSide,
+    )
+    if (this.boardTypography) {
+      this.boardTypography.rotation.z =
+        this.boardViewerSide === 'red' ? Math.PI : 0
+    }
+  }
+
   private orientCharacterBillboards(): void {
+    this.syncViewerFacing()
+
     const roleRoots = [
       ...this.pieceMeshes.values(),
       ...this.capturedDisplayMeshes.values(),
@@ -1337,12 +1568,16 @@ export class BoardScene implements AnimationSurface {
     for (const root of roleRoots) {
       const card = root.getObjectByName('role-billboard')
       if (!card) continue
-      root.getWorldPosition(this.billboardWorldPosition)
-      const worldYaw = Math.atan2(
-        this.camera.position.x - this.billboardWorldPosition.x,
-        this.camera.position.z - this.billboardWorldPosition.z,
+      const side = root.userData.side as Side
+      card.userData.viewMode = root.userData.capturedDisplay
+        ? 'front'
+        : this.characterViewBySide[side]
+      this.billboardLocalCameraPosition.copy(this.cameraRestPosition)
+      root.worldToLocal(this.billboardLocalCameraPosition)
+      card.rotation.y = Math.atan2(
+        this.billboardLocalCameraPosition.x,
+        this.billboardLocalCameraPosition.z,
       )
-      card.rotation.y = worldYaw - root.rotation.y
       card.rotation.x =
         this.presentationProfile.camera.billboardPitchRadians
       card.scale.setScalar(this.presentationProfile.camera.billboardScale)
@@ -1367,15 +1602,27 @@ export class BoardScene implements AnimationSurface {
         assetUrl ? this.textureStatus.get(assetUrl) : undefined,
         maskAssetUrl ? this.textureStatus.get(maskAssetUrl) : undefined,
       )
-      if (colorBody) colorBody.visible = visibility.colorBody
-      if (fallback) fallback.visible = visibility.silhouette
+      const backFacing = card.userData.viewMode === 'back'
+      if (colorBody) colorBody.visible = !backFacing && visibility.colorBody
+      // 背向暂用同源轮廓剪影，绝不从背面镜像正脸；有正式背图后替换此层。
+      if (fallback) {
+        fallback.visible = backFacing
+          ? visibility.rim
+          : visibility.silhouette
+      }
       if (rim) rim.visible = visibility.rim
-      if (placeholder) placeholder.visible = visibility.geometricPlaceholder
-      card.userData.visualMode = visibility.colorBody
-        ? CHARACTER_VISUAL_MODE
-        : visibility.silhouette
-          ? 'production-v3-silhouette-fallback'
+      if (placeholder) {
+        placeholder.visible = visibility.geometricPlaceholder
+      }
+      card.userData.visualMode = backFacing
+        ? visibility.rim
+          ? CHARACTER_BACK_VISUAL_MODE
           : 'geometric-placeholder'
+        : visibility.colorBody
+          ? CHARACTER_VISUAL_MODE
+          : visibility.silhouette
+            ? 'production-v3-silhouette-fallback'
+            : 'geometric-placeholder'
     }
   }
 
@@ -1396,17 +1643,23 @@ export class BoardScene implements AnimationSurface {
   }
 
   render() {
-    this.syncCharacterAssetVisibility()
     this.updateAmbientMotion()
+    this.camera.position.copy(this.cameraRestPosition)
+    this.camera.lookAt(this.cameraTarget)
+    this.camera.updateMatrixWorld(true)
     this.orientCharacterBillboards()
+    this.syncCharacterAssetVisibility()
+
     this.battleFeedback.getCameraOffset(this.cameraShakeOffset)
     this.camera.position
       .copy(this.cameraRestPosition)
       .add(this.cameraShakeOffset)
     this.camera.lookAt(this.cameraTarget)
+    this.camera.updateMatrixWorld(true)
     this.renderer.render(this.scene, this.camera)
     this.camera.position.copy(this.cameraRestPosition)
     this.camera.lookAt(this.cameraTarget)
+    this.camera.updateMatrixWorld(true)
   }
 }
 
@@ -1444,6 +1697,25 @@ function setSpriteVisual(
   sprite.visible = visible
   sprite.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1)
   sprite.scale.setScalar(scale)
+}
+
+function projectedBoardBounds(
+  project: (x: number, z: number) => { x: number; y: number },
+) {
+  const edgeX = BOARD_W / 2 + 0.47
+  const edgeZ = BOARD_H / 2 + 0.47
+  const corners = [
+    project(-edgeX, -edgeZ),
+    project(edgeX, -edgeZ),
+    project(-edgeX, edgeZ),
+    project(edgeX, edgeZ),
+  ]
+  return {
+    left: Math.min(...corners.map((point) => point.x)),
+    right: Math.max(...corners.map((point) => point.x)),
+    top: Math.min(...corners.map((point) => point.y)),
+    bottom: Math.max(...corners.map((point) => point.y)),
+  }
 }
 
 function screenDistance(

@@ -11,6 +11,7 @@ Original prompt: 那你设计开发方案，开始开发吧，合理利用资源
 - [x] Playwright 可玩验证与截图检查
 - [x] `program-competition-2023` 三次同形、长将／长捉、自然限着与死局自动裁决
 - [x] 结构化非法着原因、统一中文提示与内置规则说明
+- [x] 鼠标／触控水平环绕、阵营正背面与棋盘文字随观战半场切换
 
 ## 约束
 
@@ -198,3 +199,25 @@ Original prompt: 那你设计开发方案，开始开发吧，合理利用资源
 - Playwright `390×844`、`768×1024`、`844×390` 与原始客户端 `1280×720` 均完成截图验收；竖屏棋盘全部 clear，窄横屏棋盘落入左右侧栏之间，桌面镜头与 source 纹理不回退，所有场景无 `console.error` / `pageerror`。
 - 边界视口补充验收：`800×600` 顶部 HUD 预留 `160px`，棋盘顶边 `176.7px`，无状态条重叠；`568×320` 棋盘落入左右侧栏之间，六个操作按钮实测均为 `45×44px` 且工具栏不越界。模拟顶部 `47px`、底部 `34px` 设备安全区，以及横屏左侧单独 `44px` 刘海后，相机都会实时重算并保持棋盘 clear。
 - 同页动态切档验证 `source → 512 → source`：每段 requested / active 档一致、14 + 7 张贴图全部 ready、无 reloading / failedReload 与浏览器错误；仅记录 SwiftShader 截图 `ReadPixels` 的已知性能提示。
+
+## 2026-08-05 第十阶段：可旋转战场与观战朝向
+
+- Canvas 新增鼠标与触控水平拖动环绕；相机只绕世界 Y 轴，保留各 `PresentationProfile` 的俯角、FOV、投影中心和用户 yaw。`pointerup` 点按走棋继续使用同一手势状态机，`10 CSS px` 死区、额外触点、取消与丢失 capture 均不会误走棋。
+- 修正分段 PointerEvent 越过死区时的累计量：首次进入拖动会补齐起点总位移，旋转角度不再依赖浏览器事件频率；拖动结束不会遗留 `activePointerId` 或 grabbing 光标。
+- 旋转安全取景使用当前设备 `0°` 基准棋盘矩形做边界并二分求最小距离，避免桌面 45° 棋盘压住底部工具栏；高频求解复用相机与投影向量，不在每个 pointermove 重复 clone。相机拉远时线性雾距按同一比例扩展，修复手机侧视棋盘被远雾吞没的问题。
+- 阵营世界朝向固定为红方 `+Z`、黑方 `-Z`。默认红方视角显示红方背向剪影／黑方正面，转到黑方半场后互换；侧视临界区使用 `0.12` 滞回避免闪烁，被俘展示仍强制正面。背向层复用同源 Alpha 轮廓，不镜像正脸，也不计入资源加载 fallback。
+- `board-typography` 与当前观战半场同步：红方半场保持 `rotation=180°`，黑方半场切到 `0°`，因此旋转 180° 后“楚河／汉界”和边缘坐标仍朝向当前用户；与角色翻面共用同一滞回阈值。
+- HUD 常驻短提示改为“点按走棋 · 拖动旋转视角”。`render_game_to_text()` 增加 yaw、取景比例、拖动状态、相机位置、阵营 `front/back`、棋盘文字观战方与角度，便于自动验收。
+
+### 第十阶段验收
+
+- `npm test`：15 个测试文件、185 个测试全部通过；新增相机环绕／雾距、事件频率无关拖动、阵营正背面、侧视滞回和棋盘观战方断言。
+- `npm run typecheck`、`npm run build` 与 `git diff --check`：全部通过；主包 `651.45 kB`（gzip `172.17 kB`），仅保留既有的单包超过 `500 kB` 非阻断提示。
+- 原始网页游戏 Playwright 客户端复测：轻触红马仍得到 2 个合法落点，`livePly=0`、`fallbackInstances=0`、`backViewInstances=16`，无 `console.error` / `pageerror`。
+- 桌面 `1280×720` 与真实 CDP touch 手机 `375×667`：0°、45°、180° 拖动均不改变 `ply`，棋盘完整且不碰 HUD；180° 时 `red=front / black=back`、文字 `viewerSide=black / rotation=0°`。手机 45° 使用 512 档、取景比例约 `1.46`，雾修复后棋盘与双方棋子均清晰可见。
+- 最终状态与截图位于 `/Users/bril/Documents/Codex/2026-08-04/https-x-com-cellinlab-status-2084507607713116460/work/playwright-camera-orbit/final-fog-and-typography/`；额外 `390×844` 触控证据位于同任务的 `work/playwright-orbit-latest-review/`。
+- 已录制 `1280×720` 真实指针演示：红黑视角往返后依次完成红炮吃黑马、黑车反吃红炮、红马跃进、黑卒／红兵推进及黑卒吃红兵；最终 `ply=6`、共吃 3 子、轮到红方，控制台无错误。约 60 秒成片与逐手状态报告位于同任务的 `work/recordings/xiangqi-operations-demo-final/`。
+
+### 后续资源建议
+
+- 当前 production turnaround 是带灰底／文字、无独立 Alpha 的建模参考，且黑方缺仕／卒两类，不能直接充当运行时背面。下一步若继续 2.5D，应完整输出红黑 14 张紧凑 `*_back_v3.jpg` 与 7 张同源 `sil_*_back_alpha.png`，并生成 512 / 768 档；若要求侧视连续自然，应直接推进多方向角色图或 GLB。

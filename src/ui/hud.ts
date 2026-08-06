@@ -1017,7 +1017,7 @@ function pieceValue(kind: Piece['kind']): number {
 /** 手机竖屏只容纳一行提示；异常信息保持权威标题，不截断成含糊短句。 */
 export function createCompactPromptLabel(prompt: GamePrompt): string {
   if (prompt.code === 'turn-local' || prompt.code === 'turn-human') {
-    return '点棋子，再点高亮落点'
+    return '点按走棋 · 拖动旋转视角'
   }
   if (prompt.code === 'piece-selected') {
     const followUp = prompt.detail?.includes('没有合法落点')

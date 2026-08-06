@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CHARACTER_BACK_VISUAL_MODE,
   CHARACTER_SPECS,
+  CHARACTER_VIEW_HYSTERESIS,
   CHARACTER_VISUAL_MODE,
   getCharacterVisualSpec,
   getSilhouetteLayout,
@@ -9,6 +11,8 @@ import {
   ROLE_RIM_SCALE,
   ROLE_VISUAL_MODE,
   resolveCharacterLayerVisibility,
+  resolveBoardViewerSide,
+  resolveFactionCharacterViewMode,
   SILHOUETTE_COLORS,
   SILHOUETTE_SPECS,
 } from './pieceVisuals'
@@ -72,6 +76,43 @@ describe('production v3 全彩角色卡规格', () => {
         expect(spec.colorAssetUrl).not.toMatch(/archive|misaligned|failed/)
       }
     }
+  })
+
+  it('按阵营世界朝向区分正背面，并在侧视死区保持稳定', () => {
+    expect(CHARACTER_BACK_VISUAL_MODE).toBe(
+      'production-v3-silhouette-facing-away',
+    )
+    const defaultBearing = { x: 0, z: -1 }
+    expect(resolveFactionCharacterViewMode('red', defaultBearing)).toBe(
+      'back',
+    )
+    expect(resolveFactionCharacterViewMode('black', defaultBearing)).toBe(
+      'front',
+    )
+
+    const oppositeBearing = { x: 0, z: 1 }
+    expect(resolveFactionCharacterViewMode('red', oppositeBearing)).toBe(
+      'front',
+    )
+    expect(resolveFactionCharacterViewMode('black', oppositeBearing)).toBe(
+      'back',
+    )
+
+    const sideBearing = {
+      x: 1,
+      z: CHARACTER_VIEW_HYSTERESIS / 2,
+    }
+    expect(
+      resolveFactionCharacterViewMode('red', sideBearing, 'back'),
+    ).toBe('back')
+    expect(
+      resolveFactionCharacterViewMode('red', sideBearing, 'front'),
+    ).toBe('front')
+
+    expect(resolveBoardViewerSide(defaultBearing)).toBe('red')
+    expect(resolveBoardViewerSide(oppositeBearing)).toBe('black')
+    expect(resolveBoardViewerSide(sideBearing, 'red')).toBe('red')
+    expect(resolveBoardViewerSide(sideBearing, 'black')).toBe('black')
   })
 
   it('红黑同棋种共享 Alpha、锚点和占位，并保留剪影回退', () => {

@@ -68,7 +68,7 @@ describe('createCompactPromptLabel', () => {
           title: code === 'turn-local' ? '红方行棋' : '轮到你（红方）',
           detail: '点选棋子，再点亮起的合法落点',
         }),
-      ).toBe('点棋子，再点高亮落点')
+      ).toBe('点按走棋 · 拖动旋转视角')
     },
   )
 

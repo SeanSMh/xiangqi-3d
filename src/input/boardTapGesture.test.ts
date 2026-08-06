@@ -38,10 +38,64 @@ describe('BoardTapGesture', () => {
   it('超过阈值的拖动不会误走棋', () => {
     const gesture = new BoardTapGesture()
     gesture.begin(sample())
-    gesture.move(
-      sample({ clientX: 120 + BOARD_TAP_MOVE_THRESHOLD_PX + 0.1 }),
+    const firstDrag = gesture.trackMove(
+      sample({
+        clientX: 120 + BOARD_TAP_MOVE_THRESHOLD_PX + 0.1,
+        clientY: 244,
+      }),
     )
+    expect(firstDrag.tracked).toBe(true)
+    expect(firstDrag.drag).toMatchObject({
+      deltaYCss: 4,
+      justStarted: true,
+    })
+    expect(firstDrag.drag?.deltaXCss).toBeCloseTo(
+      BOARD_TAP_MOVE_THRESHOLD_PX + 0.1,
+    )
+    expect(gesture.isDragging).toBe(true)
+
+    expect(
+      gesture.trackMove(sample({ clientX: 142, clientY: 248 })),
+    ).toEqual({
+      tracked: true,
+      drag: {
+        deltaXCss: 142 - (120 + BOARD_TAP_MOVE_THRESHOLD_PX + 0.1),
+        deltaYCss: 4,
+        justStarted: false,
+      },
+    })
     expect(gesture.end(sample({ clientX: 132 }))).toBeNull()
+  })
+
+  it('只在 pointerup 出现的最终位移仍可先交给旋转层消费', () => {
+    const gesture = new BoardTapGesture()
+    gesture.begin(sample())
+    const finalMove = gesture.trackMove(sample({ clientX: 150 }))
+
+    expect(finalMove.drag).toEqual({
+      deltaXCss: 30,
+      deltaYCss: 0,
+      justStarted: true,
+    })
+    expect(gesture.end(sample({ clientX: 150 }))).toBeNull()
+    expect(gesture.activePointerId).toBeNull()
+  })
+
+  it('分段越过死区时一次补齐起点位移，旋转量不受事件频率影响', () => {
+    const gesture = new BoardTapGesture()
+    gesture.begin(sample())
+
+    expect(gesture.trackMove(sample({ clientX: 126 })).drag).toBeNull()
+    expect(gesture.trackMove(sample({ clientX: 132 })).drag).toEqual({
+      deltaXCss: 12,
+      deltaYCss: 0,
+      justStarted: true,
+    })
+    expect(gesture.trackMove(sample({ clientX: 140 })).drag).toEqual({
+      deltaXCss: 8,
+      deltaYCss: 0,
+      justStarted: false,
+    })
   })
 
   it('忽略右键与非主触点，并在第二指按下时取消首指提交', () => {
