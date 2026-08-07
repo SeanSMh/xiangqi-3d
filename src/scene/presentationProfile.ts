@@ -61,7 +61,16 @@ export interface PresentationProfile {
   }
   readonly capturedDisplayMode: 'side-columns' | 'hud-only'
   readonly safeAreaInsetsCss: SafeAreaInsetsCss
+  /**
+   * 3/4 主视角的取景内缩。桌面横屏为 0——那套构图本来就是照着避开 HUD 画的，
+   * 再内缩只会让棋盘无谓变小。
+   */
   readonly framingInsetsCss: SafeAreaInsetsCss
+  /**
+   * HUD 实际占用的矩形（预留 + 设备安全区），**始终**包含 HUD 预留。
+   * 备用构图（如战术俯视）不能沿用主视角的 0 内缩，否则会顶到工具栏底下。
+   */
+  readonly hudReservedCss: SafeAreaInsetsCss
 }
 
 export interface PresentationTextureReloadTarget<Image = unknown> {
@@ -147,6 +156,7 @@ export function resolvePresentationProfile(
         : 'compact-landscape'
 
   const safeArea = sanitizeSafeAreaInsets(safeAreaInsetsCss)
+  const hudReservedCss = resolveHudReserved(width, height, safeArea)
   const framingInsetsCss = resolveFramingInsets(
     width,
     height,
@@ -175,6 +185,21 @@ export function resolvePresentationProfile(
       deviceClass === 'phone' ? 'hud-only' : 'side-columns',
     safeAreaInsetsCss: safeArea,
     framingInsetsCss,
+    hudReservedCss,
+  }
+}
+
+function resolveHudReserved(
+  viewportWidth: number,
+  viewportHeight: number,
+  safeAreaInsetsCss: SafeAreaInsetsCss,
+): SafeAreaInsetsCss {
+  const hud = resolveHudLayout(viewportWidth, viewportHeight)
+  return {
+    top: hud.topReservedPx + safeAreaInsetsCss.top,
+    right: hud.rightReservedPx + safeAreaInsetsCss.right,
+    bottom: hud.bottomReservedPx + safeAreaInsetsCss.bottom,
+    left: hud.leftReservedPx + safeAreaInsetsCss.left,
   }
 }
 

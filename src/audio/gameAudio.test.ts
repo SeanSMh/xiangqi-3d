@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type {
+  AnimationEvent,
+  AnimationEventType,
+} from '../animation/animationDirector'
 import {
   GameAudio,
   INITIAL_GAME_AUDIO_STATE,
@@ -6,6 +10,18 @@ import {
   reduceGameAudioSignal,
   type GameAudioEventState,
 } from './gameAudio'
+
+function animationEvent(type: AnimationEventType): AnimationEvent {
+  return {
+    type,
+    atMs: 0,
+    pieceId: 'p1',
+    pieceKind: 'chariot',
+    side: 'red',
+    square: { file: 0, rank: 0 },
+    strength: 1,
+  }
+}
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -43,13 +59,13 @@ describe('reduceGameAudioSignal', () => {
     expect(started.state.completionPending).toBe('check')
 
     const settled = reduceGameAudioSignal(started.state, {
-      type: 'animation-phase',
-      phase: 'settle',
+      type: 'animation-event',
+      event: animationEvent('settle'),
     })
     expect(settled.cues).toEqual([])
     const finished = reduceGameAudioSignal(settled.state, {
-      type: 'animation-phase',
-      phase: 'idle',
+      type: 'animation-event',
+      event: animationEvent('complete'),
     })
     expect(finished.cues).toEqual(['check'])
     expect(finished.state).toBe(INITIAL_GAME_AUDIO_STATE)
@@ -66,29 +82,73 @@ describe('reduceGameAudioSignal', () => {
         terminal: false,
       },
     ).state
-    const travel = reduceGameAudioSignal(state, {
-      type: 'animation-phase',
-      phase: 'travel',
+    const windup = reduceGameAudioSignal(state, {
+      type: 'animation-event',
+      event: animationEvent('windup'),
     })
-    expect(travel.cues).toEqual([])
-    state = travel.state
+    expect(windup.cues).toEqual([])
+    state = windup.state
 
     const impact = reduceGameAudioSignal(state, {
-      type: 'animation-phase',
-      phase: 'impact',
+      type: 'animation-event',
+      event: animationEvent('impact'),
     })
     expect(impact.cues).toEqual(['impact'])
     state = impact.state
 
+    // 同类事件重复到达（例如取消后重放）不得二次发声。
+    const repeated = reduceGameAudioSignal(state, {
+      type: 'animation-event',
+      event: animationEvent('impact'),
+    })
+    expect(repeated.cues).toEqual([])
+
     const exit = reduceGameAudioSignal(state, {
-      type: 'animation-phase',
-      phase: 'victim-exit',
+      type: 'animation-event',
+      event: animationEvent('victim-dissolve'),
     })
     expect(exit.cues).toEqual([])
     expect(exit.state.impactPending).toBe(false)
   })
 
-  it('单次大步推进直接结束时仍补发命中和终局音', () => {
+  it('炮吃子的起音推迟到弹丸出膛，蓄能期间保持安静', () => {
+    const started = reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
+      type: 'move-start',
+      pieceKind: 'cannon',
+      capture: true,
+      givesCheck: false,
+      terminal: false,
+    })
+    expect(started.cues).toEqual([])
+    expect(started.state.launchPending).toBe(true)
+
+    const released = reduceGameAudioSignal(started.state, {
+      type: 'animation-event',
+      event: animationEvent('projectile-release'),
+    })
+    expect(released.cues).toEqual(['cannon-fire'])
+    expect(released.state.launchPending).toBe(false)
+    // 出膛只响一次。
+    expect(
+      reduceGameAudioSignal(released.state, {
+        type: 'animation-event',
+        event: animationEvent('projectile-release'),
+      }).cues,
+    ).toEqual([])
+
+    // 不吃子的炮仍在起手就发声，走的是普通走子音。
+    expect(
+      reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
+        type: 'move-start',
+        pieceKind: 'cannon',
+        capture: false,
+        givesCheck: false,
+        terminal: false,
+      }).cues,
+    ).toEqual(['move'])
+  })
+
+  it('单次大步推进直接结束时补发出膛、命中和终局音', () => {
     const started = reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
       type: 'move-start',
       pieceKind: 'cannon',
@@ -96,15 +156,67 @@ describe('reduceGameAudioSignal', () => {
       givesCheck: true,
       terminal: true,
     })
-    expect(started.cues).toEqual(['cannon-fire'])
+    expect(started.cues).toEqual([])
     expect(started.state.completionPending).toBe('terminal')
 
     const finished = reduceGameAudioSignal(started.state, {
-      type: 'animation-phase',
-      phase: 'idle',
+      type: 'animation-event',
+      event: animationEvent('complete'),
+    })
+    expect(finished.cues).toEqual(['cannon-fire', 'impact', 'terminal'])
+    expect(finished.state).toBe(INITIAL_GAME_AUDIO_STATE)
+  })
+
+  it('落步与占领各自发声，且不影响命中与收尾状态', () => {
+    const started = reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
+      type: 'move-start',
+      pieceKind: 'chariot',
+      capture: true,
+      givesCheck: false,
+      terminal: false,
+    })
+    const stepped = reduceGameAudioSignal(started.state, {
+      type: 'animation-event',
+      event: animationEvent('footfall'),
+    })
+    expect(stepped.cues).toEqual(['footstep'])
+    expect(stepped.state).toBe(started.state)
+
+    const hit = reduceGameAudioSignal(stepped.state, {
+      type: 'animation-event',
+      event: animationEvent('impact'),
+    })
+    const claimed = reduceGameAudioSignal(hit.state, {
+      type: 'animation-event',
+      event: animationEvent('claim'),
+    })
+    expect(claimed.cues).toEqual(['claim'])
+    expect(
+      reduceGameAudioSignal(claimed.state, {
+        type: 'animation-event',
+        event: animationEvent('complete'),
+      }).cues,
+    ).toEqual([])
+  })
+
+  it('演出未能启动时 animation-finished 同样补齐命中与终局', () => {
+    const started = reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
+      type: 'move-start',
+      pieceKind: 'chariot',
+      capture: true,
+      givesCheck: false,
+      terminal: true,
+    })
+    const finished = reduceGameAudioSignal(started.state, {
+      type: 'animation-finished',
     })
     expect(finished.cues).toEqual(['impact', 'terminal'])
     expect(finished.state).toBe(INITIAL_GAME_AUDIO_STATE)
+    // 已收尾后重复调用不再发声。
+    expect(
+      reduceGameAudioSignal(finished.state, { type: 'animation-finished' })
+        .cues,
+    ).toEqual([])
   })
 
   it('终局优先于将军提示，避免同时叠播', () => {
@@ -132,17 +244,17 @@ describe('reduceGameAudioSignal', () => {
     expect(reset.state).toBe(INITIAL_GAME_AUDIO_STATE)
     expect(
       reduceGameAudioSignal(reset.state, {
-        type: 'animation-phase',
-        phase: 'idle',
+        type: 'animation-event',
+        event: animationEvent('complete'),
       }).cues,
     ).toEqual([])
   })
 
-  it('无活动走子时动画阶段事件不会产生幽灵音效', () => {
+  it('无活动走子时动画事件不会产生幽灵音效', () => {
     expect(
       reduceGameAudioSignal(INITIAL_GAME_AUDIO_STATE, {
-        type: 'animation-phase',
-        phase: 'impact',
+        type: 'animation-event',
+        event: animationEvent('impact'),
       }),
     ).toEqual({ state: INITIAL_GAME_AUDIO_STATE, cues: [] })
   })

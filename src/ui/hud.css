@@ -1131,3 +1131,30 @@
     transform: translateY(8px) scale(0.98);
   }
 }
+
+/* 录制模式：收起全部面板，只留一个恢复入口。棋盘输入与快捷键不受影响。 */
+#xiangqi-hud[data-cinema='true'] > *:not(#cinema-exit-btn) {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+#cinema-exit-btn {
+  position: absolute;
+  right: max(12px, var(--xq-safe-right, 0px));
+  bottom: max(12px, var(--xq-safe-bottom, 0px));
+  z-index: 40;
+  min-height: var(--xq-touch-target, 32px);
+  pointer-events: auto;
+  opacity: 0.42;
+  transition: opacity 160ms ease;
+}
+
+#cinema-exit-btn:hover,
+#cinema-exit-btn:focus-visible {
+  opacity: 1;
+}
+
+#cinema-exit-btn[hidden] {
+  display: none;
+}

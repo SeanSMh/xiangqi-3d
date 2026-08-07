@@ -25,6 +25,7 @@ interface HudActions {
   onToggleFullscreen: () => void
   onUndo: () => void
   onToggleHistory: () => void
+  onToggleCinema: () => void
   onSeekReplay: (ply: number) => void
   onReplayFirst: () => void
   onReplayPrevious: () => void
@@ -110,7 +111,9 @@ export class Hud {
   private replayPlayButton: HTMLButtonElement
   private replayNextButton: HTMLButtonElement
   private returnLiveButton: HTMLButtonElement
+  private cinemaExitButton: HTMLButtonElement
   private historyOpen = false
+  private cinemaMode = false
   private readonly actions: HudActions
   private readonly container: HTMLElement
   private readonly handleViewportResize = () => this.resize()
@@ -441,9 +444,18 @@ export class Hud {
     topRegion.className = 'xq-top-region'
     topRegion.append(turnPanel, this.spoilsEl, this.gameStatusEl)
 
+    this.cinemaExitButton = makeButton('cinema-exit-btn', '退出录制 C', () =>
+      actions.onToggleCinema(),
+    )
+    this.cinemaExitButton.dataset.shortLabel = '退出'
+    this.cinemaExitButton.setAttribute('aria-keyshortcuts', 'C')
+    this.cinemaExitButton.hidden = true
+
+    root.dataset.cinema = 'false'
     root.append(
       topRegion,
       controls,
+      this.cinemaExitButton,
       this.settingsDialog,
       this.ruleHelpDialog,
       this.historyPanel,
@@ -483,6 +495,22 @@ export class Hud {
       '--xq-touch-target',
       `${profile.minimumTouchTargetPx}px`,
     )
+  }
+
+  get isCinemaMode(): boolean {
+    return this.cinemaMode
+  }
+
+  /**
+   * 录制模式：收起全部面板，只留一个恢复入口。
+   * 恢复按钮必须留着——不能让用户只能靠猜快捷键退出。
+   */
+  setCinemaMode(active: boolean): void {
+    if (this.cinemaMode === active) return
+    this.cinemaMode = active
+    this.rootEl.dataset.cinema = String(active)
+    this.cinemaExitButton.hidden = !active
+    if (active) this.setHistoryOpen(false)
   }
 
   setFullscreenState(active: boolean): void {

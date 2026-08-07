@@ -4,6 +4,8 @@ import {
   CHARACTER_SPECS,
   CHARACTER_VIEW_HYSTERESIS,
   CHARACTER_VISUAL_MODE,
+  getAttackPoseLayout,
+  getAttackPoseSpec,
   getCharacterVisualSpec,
   getSilhouetteLayout,
   MAX_ROLE_FOOTPRINT,
@@ -189,5 +191,44 @@ describe('production v3 全彩角色卡规格', () => {
       rim: false,
       geometricPlaceholder: true,
     })
+  })
+})
+
+describe('背向攻击姿态规格', () => {
+  it('红黑 14 种背向攻击姿 URL 与蒙版命名约定一致', () => {
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        const front = getAttackPoseSpec(side, kind, 'front')
+        const back = getAttackPoseSpec(side, kind, 'back')
+        expect(front.colorAssetUrl).toBe(
+          `/assets/poses/${side}_${kind}_attack.jpg`,
+        )
+        expect(front.alphaAssetUrl).toBe(
+          `/assets/poses/sil_${side}_${kind}_attack_alpha.png`,
+        )
+        expect(back.colorAssetUrl).toBe(
+          `/assets/poses/${side}_${kind}_attack_back.jpg`,
+        )
+        expect(back.alphaAssetUrl).toBe(
+          `/assets/poses/sil_${side}_${kind}_attack_back_alpha.png`,
+        )
+        expect(back.imageWidth).toBeGreaterThan(0)
+        expect(back.imageHeight).toBeGreaterThan(0)
+        expect(back.footCenterX).toBeGreaterThan(0)
+        expect(back.footCenterX).toBeLessThan(back.imageWidth)
+      }
+    }
+  })
+
+  it('背向攻击姿沿用待机平面尺寸，脚部锚点可算', () => {
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        const layout = getAttackPoseLayout(side, kind, 'back')
+        const idle = getSilhouetteLayout(kind)
+        expect(layout.planeWidth).toBe(idle.planeWidth)
+        expect(layout.planeHeight).toBe(idle.planeHeight)
+        expect(layout.geometryOffsetY).toBeGreaterThan(0)
+      }
+    }
   })
 })

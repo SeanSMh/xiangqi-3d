@@ -14,11 +14,29 @@ export interface ArenaEnvironmentSnapshot {
   floatingRocks: number
   dustParticles: number
   accentLights: number
+  /** 圆台专用贴图是否按 URL 请求（加载失败时材质会退回纯色）。 */
+  textured: boolean
+  assets: {
+    ground: string
+    stageTop: string
+    sky: string
+    goldRim: string
+  }
 }
+
+/** 与圆台几何匹配的贴图（中心不画假棋盘，留给 3D 棋盘 mesh）。 */
+export const ARENA_TEXTURE_URLS = {
+  ground: '/assets/arena/arena_ground_circle.jpg',
+  stageTop: '/assets/arena/arena_stage_top.jpg',
+  sky: '/assets/arena/arena_sky_equirect.jpg',
+  goldRim: '/assets/arena/arena_gold_rim.jpg',
+} as const
 
 /**
  * 棋盘外的纯表现层竞技场。所有位置和漂浮节奏均使用固定种子，
  * 便于 Playwright 在手动时钟下获得可重复截图。
+ *
+ * 贴图按圆台结构绘制：圆形地面、圆台顶、equirect 天空穹顶。
  */
 export class ArenaEnvironment {
   readonly root = new THREE.Group()
@@ -30,16 +48,39 @@ export class ArenaEnvironment {
   private readonly dustBaseY: Float32Array
   private readonly dustPhase: Float32Array
   private readonly snapshot: ArenaEnvironmentSnapshot
+  private readonly textureLoader = new THREE.TextureLoader()
+  private readonly ownedTextures: THREE.Texture[] = []
 
   constructor() {
     this.root.name = 'arena-environment'
 
+    const groundMap = this.loadColorMap(ARENA_TEXTURE_URLS.ground)
+    const stageTopMap = this.loadColorMap(ARENA_TEXTURE_URLS.stageTop)
+    const skyMap = this.loadColorMap(ARENA_TEXTURE_URLS.sky)
+    skyMap.mapping = THREE.EquirectangularReflectionMapping
+    const goldRimMap = this.loadColorMap(ARENA_TEXTURE_URLS.goldRim)
+
+    // 天空穹顶：圆台外围的高山星辰（equirect，无中心假棋盘）
+    const sky = new THREE.Mesh(
+      new THREE.SphereGeometry(90, 48, 32),
+      new THREE.MeshBasicMaterial({
+        map: skyMap,
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+      }),
+    )
+    sky.name = 'arena-sky-dome'
+    sky.renderOrder = -10
+    this.root.add(sky)
+
     const ground = new THREE.Mesh(
       new THREE.CircleGeometry(22, 72),
       new THREE.MeshStandardMaterial({
-        color: 0x0d111d,
-        metalness: 0.05,
-        roughness: 0.96,
+        map: groundMap,
+        color: 0xffffff,
+        metalness: 0.06,
+        roughness: 0.94,
       }),
     )
     ground.name = 'arena-ground'
@@ -50,11 +91,25 @@ export class ArenaEnvironment {
 
     const lowerStage = new THREE.Mesh(
       new THREE.CylinderGeometry(7.6, 8.25, 0.5, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0x1b1f2d,
-        metalness: 0.54,
-        roughness: 0.52,
-      }),
+      [
+        // side / top / bottom（CylinderGeometry material groups）
+        new THREE.MeshStandardMaterial({
+          color: 0x1b1f2d,
+          metalness: 0.54,
+          roughness: 0.52,
+        }),
+        new THREE.MeshStandardMaterial({
+          map: stageTopMap,
+          color: 0xffffff,
+          metalness: 0.28,
+          roughness: 0.7,
+        }),
+        new THREE.MeshStandardMaterial({
+          color: 0x12151c,
+          metalness: 0.4,
+          roughness: 0.8,
+        }),
+      ],
     )
     lowerStage.name = 'arena-stage-lower'
     lowerStage.scale.z = 0.82
@@ -64,11 +119,24 @@ export class ArenaEnvironment {
 
     const upperStage = new THREE.Mesh(
       new THREE.CylinderGeometry(7.2, 7.55, 0.22, 8),
-      new THREE.MeshStandardMaterial({
-        color: 0x303443,
-        metalness: 0.3,
-        roughness: 0.72,
-      }),
+      [
+        new THREE.MeshStandardMaterial({
+          color: 0x303443,
+          metalness: 0.3,
+          roughness: 0.72,
+        }),
+        new THREE.MeshStandardMaterial({
+          map: stageTopMap,
+          color: 0xffffff,
+          metalness: 0.22,
+          roughness: 0.68,
+        }),
+        new THREE.MeshStandardMaterial({
+          color: 0x1a1e28,
+          metalness: 0.35,
+          roughness: 0.75,
+        }),
+      ],
     )
     upperStage.name = 'arena-stage-upper'
     upperStage.scale.z = 0.83
@@ -79,12 +147,14 @@ export class ArenaEnvironment {
     const stageInlay = new THREE.Mesh(
       new THREE.RingGeometry(6.55, 6.72, 64),
       new THREE.MeshBasicMaterial({
-        color: 0xb18a36,
+        map: goldRimMap,
+        color: 0xffffff,
         transparent: true,
-        opacity: 0.62,
+        opacity: 0.85,
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         toneMapped: false,
+        side: THREE.DoubleSide,
       }),
     )
     stageInlay.name = 'arena-stage-gold-inlay'
@@ -185,6 +255,8 @@ export class ArenaEnvironment {
       floatingRocks: rockPositions.length,
       dustParticles: dustCount,
       accentLights: accentPositions.length,
+      textured: true,
+      assets: { ...ARENA_TEXTURE_URLS },
     }
   }
 
@@ -209,7 +281,26 @@ export class ArenaEnvironment {
   }
 
   getSnapshot(): ArenaEnvironmentSnapshot {
-    return { ...this.snapshot }
+    return {
+      ...this.snapshot,
+      assets: { ...this.snapshot.assets },
+    }
+  }
+
+  dispose(): void {
+    for (const texture of this.ownedTextures) texture.dispose()
+    this.ownedTextures.length = 0
+  }
+
+  private loadColorMap(url: string): THREE.Texture {
+    const texture = this.textureLoader.load(url)
+    texture.colorSpace = THREE.SRGBColorSpace
+    texture.anisotropy = 8
+    // 圆台顶/地面：夹紧边缘，避免圆柱侧面采样溢色
+    texture.wrapS = THREE.ClampToEdgeWrapping
+    texture.wrapT = THREE.ClampToEdgeWrapping
+    this.ownedTextures.push(texture)
+    return texture
   }
 }
 

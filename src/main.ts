@@ -3,6 +3,10 @@
  * 规则状态是唯一真相，Three.js 只负责呈现、演出与输入拾取。
  */
 import { AnimationDirector } from './animation/animationDirector'
+import {
+  COMBAT_PROFILES,
+  MAX_CAPTURE_DURATION_MS,
+} from './animation/combatProfile'
 import { GameAudio } from './audio/gameAudio'
 import { pieceAt, pieceLabel } from './engine/board'
 import { AiCoordinator } from './game/aiCoordinator'
@@ -22,6 +26,12 @@ import {
   BoardTapGesture,
 } from './input/boardTapGesture'
 import { BoardScene } from './scene/boardScene'
+import {
+  QUALITY_TIERS,
+  advanceFrameBudget,
+  createFrameBudget,
+  parseQualityTier,
+} from './scene/qualityTier'
 import type { GameState, Move } from './types/xiangqi'
 import {
   deriveGamePrompt,
@@ -38,7 +48,18 @@ const REPLAY_STEP_MS = 700
 const INTERACTION_FEEDBACK_MS = 1800
 const controller = new GameController()
 const scene = new BoardScene(app)
-const animations = new AnimationDirector(scene)
+// 系统降低动效偏好只压缩时长与位移幅度，绝不裁掉任何演出阶段——
+// 否则事件流与常规模式不一致，自动化验收就失去可比性。
+const reducedMotionQuery =
+  typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-reduced-motion: reduce)')
+    : null
+const animations = new AnimationDirector(scene, {
+  reducedMotion: reducedMotionQuery?.matches === true,
+})
+reducedMotionQuery?.addEventListener('change', (event) => {
+  animations.setTiming({ reducedMotion: event.matches })
+})
 const gameAudio = new GameAudio()
 const boardTapGesture = new BoardTapGesture()
 let matchConfig: MatchConfig = { ...DEFAULT_MATCH_CONFIG }
@@ -50,6 +71,7 @@ const hud = new Hud(app, {
   onToggleFullscreen: () => void toggleFullscreen(),
   onUndo: () => undoLastMove(),
   onToggleHistory: () => toggleHistory(),
+  onToggleCinema: () => toggleCinemaMode(),
   onSeekReplay: (ply) => seekReplay(ply),
   onReplayFirst: () => replayFirst(),
   onReplayPrevious: () => replayPrevious(),
@@ -63,8 +85,13 @@ let interactionFeedback: InteractionFeedback | null = null
 let interactionFeedbackExpiresAt = 0
 let replayPlaying = false
 let replayElapsedMs = 0
-let manualClock =
-  new URLSearchParams(window.location.search).get('clock') === 'manual'
+const launchParams = new URLSearchParams(window.location.search)
+let manualClock = launchParams.get('clock') === 'manual'
+// `?quality=lite` 固定档位，便于在高性能机器上验收低档表现；固定后不再自动降档。
+const forcedQualityTier = parseQualityTier(launchParams.get('quality'))
+const qualityTierLocked = forcedQualityTier !== null
+if (forcedQualityTier) scene.setQualityTier(forcedQualityTier)
+let frameBudget = createFrameBudget(scene.getQualityTier())
 let lastFrameTime = performance.now()
 const fullscreenAvailable =
   document.fullscreenEnabled && typeof app.requestFullscreen === 'function'
@@ -197,6 +224,20 @@ function applyMatchConfig(config: MatchConfig): void {
   restartGame()
 }
 
+/** 战术俯视只是备用构图，不是自由俯角；立绘随之隐藏，改用底座汉字读盘。 */
+function toggleTacticalView(): void {
+  scene.setTacticalView(!scene.isTacticalView())
+  clearInteractionFeedback()
+  syncUiAndMarkers()
+}
+
+/** 录制模式：收起全部 HUD，只留一个恢复入口，便于出片。 */
+function toggleCinemaMode(): void {
+  hud.setCinemaMode(!hud.isCinemaMode)
+  clearInteractionFeedback()
+  syncUiAndMarkers()
+}
+
 function toggleRuleHelp(): void {
   const opening = !hud.isRuleHelpOpen
   if (
@@ -221,12 +262,11 @@ function advanceSimulation(milliseconds: number): void {
   simulationTime += milliseconds
   scene.setPresentationTime(simulationTime)
   const animationWasBusy = animations.isBusy
-  let changed = animations.advance(milliseconds)
-  if (animationWasBusy) {
-    gameAudio.dispatch({
-      type: 'animation-phase',
-      phase: animations.getSnapshot().phase,
-    })
+  const advanced = animations.advance(milliseconds)
+  let changed = advanced.completed
+  // 事件按时间序转发；大 delta 一次跨完整场演出时也不会漏发命中或收尾。
+  for (const event of advanced.events) {
+    gameAudio.dispatch({ type: 'animation-event', event })
   }
   if (
     interactionFeedback &&
@@ -541,7 +581,7 @@ function startMoveAnimation(move: Move): void {
     })
   }
   if (!started) {
-    gameAudio.dispatch({ type: 'animation-phase', phase: 'idle' })
+    gameAudio.dispatch({ type: 'animation-finished' })
     snapEntireView()
     aiCoordinator.finishAnimation()
     return
@@ -688,6 +728,16 @@ window.addEventListener('keydown', (event) => {
     toggleHistory()
     return
   }
+  if (key === 't') {
+    event.preventDefault()
+    toggleTacticalView()
+    return
+  }
+  if (key === 'c') {
+    event.preventDefault()
+    toggleCinemaMode()
+    return
+  }
   if (!hud.isHistoryOpen) return
   if (
     (event.key === ' ' || event.key === 'Enter') &&
@@ -775,9 +825,39 @@ window.render_game_to_text = () => {
         settingsOpen: hud.isMatchSettingsOpen,
         ruleHelpOpen: hud.isRuleHelpOpen,
       },
+      view: {
+        tactical: scene.isTacticalView(),
+        cinema: hud.isCinemaMode,
+      },
+      quality: {
+        tier: scene.getQualityTier(),
+        locked: qualityTierLocked,
+        lastWindowFps: frameBudget.lastWindowFps,
+        downgrades: frameBudget.downgrades,
+        upgrades: frameBudget.upgrades,
+        recoveryStreak: frameBudget.recoveryStreak,
+      },
       ai,
       audio: gameAudio.getSnapshot(),
       animation,
+      animationTiming: {
+        ...animations.getTiming(),
+        reducedMotionPreferred: reducedMotionQuery?.matches === true,
+        maxCaptureDurationMs: MAX_CAPTURE_DURATION_MS,
+        profiles: Object.fromEntries(
+          (
+            [
+              'king',
+              'advisor',
+              'elephant',
+              'horse',
+              'chariot',
+              'cannon',
+              'pawn',
+            ] as const
+          ).map((kind) => [kind, COMBAT_PROFILES[kind].style]),
+        ),
+      },
       presentation: {
         ...scene.getPresentationSnapshot(state),
         pendingCaptureId,
@@ -879,6 +959,12 @@ function showInteractionFeedback(feedback: InteractionFeedback): void {
   syncUiAndMarkers()
 }
 
+window.projectSquare = (file: number, rank: number) => {
+  if (!Number.isInteger(file) || !Number.isInteger(rank)) return null
+  if (file < 0 || file > 8 || rank < 0 || rank > 9) return null
+  return scene.projectSquare(file, rank)
+}
+
 window.advanceTime = (milliseconds: number) => {
   manualClock = true
   if (Number.isFinite(milliseconds) && milliseconds >= 0) {
@@ -917,9 +1003,33 @@ snapEntireView()
 function loop(now: number): void {
   const delta = Math.min(50, Math.max(0, now - lastFrameTime))
   lastFrameTime = now
-  if (!manualClock) advanceSimulation(delta)
+  if (!manualClock) {
+    advanceSimulation(delta)
+    // 手动时钟下绝不采样：advanceTime(2000) 会被误读成 0.5fps，
+    // 一次快进就把画质打到最低档，自动化验收随即失去可比性。
+    sampleFrameBudget(delta)
+  }
   scene.render()
   requestAnimationFrame(loop)
+}
+
+function sampleFrameBudget(deltaMs: number): void {
+  if (qualityTierLocked) return
+  const next = advanceFrameBudget(frameBudget, deltaMs)
+  if (next === frameBudget) return
+  const previousTier = scene.getQualityTier()
+  frameBudget = next
+  if (next.tier === previousTier) return
+  scene.setQualityTier(next.tier)
+  // 用档位序号判断方向。直接比字符串会踩坑：'balanced' < 'high' 恒为 true。
+  const recovered =
+    QUALITY_TIERS.indexOf(next.tier) < QUALITY_TIERS.indexOf(previousTier)
+  console.info(
+    recovered
+      ? `[xiangqi-3d] 帧率回升（${next.lastWindowFps} fps），画质恢复到 ${next.tier}`
+      : `[xiangqi-3d] 帧率偏低（${next.lastWindowFps} fps），画质降至 ${next.tier}`,
+  )
+  syncUiAndMarkers()
 }
 requestAnimationFrame(loop)
 

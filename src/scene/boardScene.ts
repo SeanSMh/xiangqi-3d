@@ -1,171 +1,115 @@
 import * as THREE from 'three'
 import type {
+  AnimationEvent,
   AnimationSurface,
   PiecePose,
 } from '../animation/animationDirector'
-import type {
-  BoardCoord,
-  GameState,
-  Move,
-  Piece,
-  PieceKind,
-  Side,
-} from '../types/xiangqi'
-import { pieceLabel } from '../engine/board'
+import type { BoardCoord, GameState, Move, Side } from '../types/xiangqi'
 import { ArenaEnvironment } from './arenaEnvironment'
-import { BattleFeedback } from './battleFeedback'
-import {
-  cameraOrbitYawAfterDrag,
-  resolveCameraOrbitFogRange,
-  resolveCameraOrbitPosition,
-} from './cameraOrbit'
+import { BOARD_H, BOARD_W, CELL, fileRankToWorld } from './boardGeometry'
+import { CameraDirector } from './cameraDirector'
+import { CombatEffects } from './combatEffects'
 import {
   applyUnifiedLighting,
   configureKeyLightShadow,
-  FACTION_COLORS,
   invalidateShadowAwareMaterials,
-  LIGHTING,
 } from './lighting'
+import { PiecePresenter } from './piecePresenter'
 import {
-  commitPresentationTextureReplacement,
   resolvePresentationProfile,
-  resolvePresentationTextureRequestMode,
-  resolvePresentationTextureStatusAfterFailure,
-  resolvePresentationTextureUrl,
-  type CharacterAssetTier,
   type PresentationProfile,
   type SafeAreaInsetsCss,
-  type PresentationTextureStatus,
 } from './presentationProfile'
 import {
-  CHARACTER_BACK_VISUAL_MODE,
+  resolveEffectiveQuality,
+  type EffectiveQuality,
+  type QualityTier,
+} from './qualityTier'
+import {
   CHARACTER_VISUAL_MODE,
-  getCharacterVisualSpec,
   PIECE_KINDS,
+  getCharacterVisualSpec,
   resolveBoardViewerSide,
-  resolveFactionCharacterViewMode,
-  resolveCharacterLayerVisibility,
-  ROLE_BASE_TOP,
-  ROLE_RIM_SCALE,
-  SILHOUETTE_COLORS,
-  type CharacterViewMode,
 } from './pieceVisuals'
+import { TextureLibrary } from './textureLibrary'
 
-/** 格距：交点间距 */
-export const CELL = 1.0
-/** 棋盘：9 竖线 × 10 横线 → 宽 8 格距，高 9 格距 */
-export const BOARD_W = 8 * CELL
-export const BOARD_H = 9 * CELL
-/** 待机占位：直径不超过 0.85 格（交点周围） */
-export const OCCUPANCY_DIAMETER = 0.85 * CELL
+export {
+  BOARD_H,
+  BOARD_W,
+  CELL,
+  OCCUPANCY_DIAMETER,
+  fileRankToWorld,
+} from './boardGeometry'
 
-export function fileRankToWorld(file: number, rank: number): THREE.Vector3 {
-  const x = (file - 4) * CELL
-  const z = (rank - 4.5) * CELL
-  return new THREE.Vector3(x, 0, z)
-}
+/** 将军宣告后的强 flare 时长；随后长驻在 watch 亮度上。 */
+const CHECK_FLARE_MS = 620
+/** 长驻观察亮度：足够被余光注意到，又不至于盖住棋盘。 */
+const CHECK_WATCH_OPACITY = 0.16
 
+/**
+ * 场景组合根。
+ *
+ * 它自己只负责棋盘本体、交点标记和拾取；相机、棋子、特效与纹理都下放给
+ * 专门的子系统，本类的职责是把它们接在一起并对外维持 `AnimationSurface`
+ * 契约——规则状态仍是唯一真相，这里永远不做任何规则判断。
+ */
 export class BoardScene implements AnimationSurface {
   readonly scene = new THREE.Scene()
-  readonly camera: THREE.PerspectiveCamera
   readonly renderer: THREE.WebGLRenderer
-  private pieceMeshes = new Map<string, THREE.Group>()
-  private capturedDisplayMeshes = new Map<string, THREE.Group>()
-  private arenaEnvironment = new ArenaEnvironment()
-  private battleFeedback = new BattleFeedback()
-  private boardRoot = new THREE.Group()
-  private markerRoot = new THREE.Group()
+
+  private readonly cameraDirector: CameraDirector
+  private readonly textures: TextureLibrary
+  private readonly pieces: PiecePresenter
+  private readonly effects: CombatEffects
+  private readonly arenaEnvironment = new ArenaEnvironment()
+
+  private readonly boardRoot = new THREE.Group()
+  private readonly markerRoot = new THREE.Group()
   private checkMarker: THREE.Mesh<
     THREE.RingGeometry,
     THREE.MeshBasicMaterial
   > | null = null
-  private textureLoader = new THREE.TextureLoader()
-  private textureCache = new Map<string, THREE.Texture>()
-  private textureLoadRevision = new Map<string, number>()
-  private textureStatus = new Map<string, PresentationTextureStatus>()
-  private textureActiveTier = new Map<string, CharacterAssetTier>()
-  private reloadingTextures = new Set<string>()
-  private failedTextureReloads = new Set<string>()
-  private billboardLocalCameraPosition = new THREE.Vector3()
-  private pointer = new THREE.Vector2()
-  private raycaster = new THREE.Raycaster()
-  private boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
-  private moveTrail: THREE.Mesh<
-    THREE.CylinderGeometry,
-    THREE.MeshBasicMaterial
-  > | null = null
-  private cannonProjectile: THREE.Group | null = null
-  private cannonProjectileCore: THREE.Mesh<
-    THREE.SphereGeometry,
-    THREE.MeshBasicMaterial
-  > | null = null
-  private cannonProjectileShell: THREE.Mesh<
-    THREE.SphereGeometry,
-    THREE.MeshBasicMaterial
-  > | null = null
-  private cannonProjectileTrail: THREE.Mesh<
-    THREE.CylinderGeometry,
-    THREE.MeshBasicMaterial
-  > | null = null
-  private whiteImpact: THREE.Sprite | null = null
-  private orangeImpact: THREE.Sprite | null = null
-  private presentationTimeMs = 0
-  private cameraRestPosition = new THREE.Vector3(0, 11, -10)
-  private cameraTarget = new THREE.Vector3()
-  private cameraShakeOffset = new THREE.Vector3()
-  private cameraOrbitOffset = new THREE.Vector3()
-  private orbitFitCamera = new THREE.PerspectiveCamera()
-  private orbitFitCandidate = new THREE.Vector3()
-  private orbitFitPoint = new THREE.Vector3()
-  private orbitBaselineBounds = { left: 0, right: 0, top: 0, bottom: 0 }
-  private orbitCandidateBounds = { left: 0, right: 0, top: 0, bottom: 0 }
-  private cameraYawOffsetRadians = 0
-  private cameraOrbitFramingScale = 1
-  private cameraViewDragging = false
-  private characterViewBySide: Record<Side, CharacterViewMode> = {
-    red: 'back',
-    black: 'front',
-  }
   private boardTypography: THREE.Mesh | null = null
   private boardViewerSide: Side = 'red'
+  private checkFlareStartMs = -1
+  private checkSquareKey = ''
+
+  private readonly pointer = new THREE.Vector2()
+  private readonly raycaster = new THREE.Raycaster()
+  private readonly boardPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+  private readonly cameraShakeOffset = new THREE.Vector3()
+
+  private presentationTimeMs = 0
   private presentationProfile: PresentationProfile
-  private keyLight: THREE.DirectionalLight
+  private qualityTier: QualityTier = 'high'
+  private effectiveQuality: EffectiveQuality | null = null
+  private readonly keyLight: THREE.DirectionalLight
   private resizeObserver: ResizeObserver | null = null
   private readonly container: HTMLElement
+  private componentsReady = false
 
   constructor(container: HTMLElement) {
     this.container = container
-    const w = container.clientWidth
-    const h = container.clientHeight
+    const width = container.clientWidth
+    const height = container.clientHeight
     this.presentationProfile = resolvePresentationProfile(
-      w,
-      h,
+      width,
+      height,
       window.devicePixelRatio,
       readSafeAreaInsetsCss(container),
     )
-    this.camera = new THREE.PerspectiveCamera(
-      this.presentationProfile.camera.fov,
-      w / h,
-      0.1,
-      100,
+
+    this.cameraDirector = new CameraDirector(this.presentationProfile, () =>
+      this.handleCameraPoseChanged(),
     )
-    applyPresentationCameraProjection(
-      this.camera,
-      this.presentationProfile,
-    )
-    this.cameraRestPosition.copy(this.presentationProfile.camera.position)
-    this.cameraTarget.copy(this.presentationProfile.camera.target)
-    this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(this.cameraTarget)
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(this.presentationProfile.renderer.pixelRatio)
-    this.renderer.setSize(w, h)
+    this.renderer.setSize(width, height)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = 1.1
-    this.renderer.shadowMap.enabled =
-      this.presentationProfile.renderer.shadows
+    this.renderer.shadowMap.enabled = this.presentationProfile.renderer.shadows
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
     this.renderer.shadowMap.autoUpdate =
       this.presentationProfile.renderer.shadowAutoUpdate
@@ -178,24 +122,38 @@ export class BoardScene implements AnimationSurface {
     this.renderer.domElement.style.cursor = 'grab'
     container.appendChild(this.renderer.domElement)
 
-    this.keyLight = applyUnifiedLighting(this.scene).key
-    configureKeyLightShadow(
-      this.keyLight,
-      this.presentationProfile.renderer.shadowMapSize,
+    this.textures = new TextureLibrary(
+      this.presentationProfile,
+      this.renderer.capabilities.getMaxAnisotropy(),
     )
+    this.pieces = new PiecePresenter(
+      this.boardRoot,
+      this.textures,
+      this.presentationProfile,
+    )
+    this.effects = new CombatEffects(this.textures, this.cameraDirector.camera)
+
+    this.keyLight = applyUnifiedLighting(this.scene).key
+    this.applyQuality()
     this.scene.add(this.arenaEnvironment.root)
     this.buildBoard()
     this.scene.add(this.boardRoot)
     this.boardRoot.add(this.markerRoot)
-    this.boardRoot.add(this.battleFeedback.root)
-    this.ensureImpactSprites()
+    this.boardRoot.add(this.effects.root)
+    this.boardRoot.add(this.pieces.auraRoot)
+    this.componentsReady = true
 
-    const refit = () => this.resize(container.clientWidth, container.clientHeight)
+    const refit = () =>
+      this.resize(container.clientWidth, container.clientHeight)
     window.addEventListener('resize', refit)
     if (typeof ResizeObserver !== 'undefined') {
       this.resizeObserver = new ResizeObserver(refit)
       this.resizeObserver.observe(container)
     }
+  }
+
+  get camera(): THREE.PerspectiveCamera {
+    return this.cameraDirector.camera
   }
 
   /** 容器、全屏状态或 DPR 改变后统一重算相机与渲染预算。 */
@@ -223,112 +181,465 @@ export class BoardScene implements AnimationSurface {
     )
     if (!sizeChanged && !dprChanged && !framingChanged) return
 
-    const pixelRatioChanged =
-      profile.renderer.pixelRatio !== previous.renderer.pixelRatio
-    const shadowsChanged =
-      profile.renderer.shadows !== previous.renderer.shadows
-    const shadowMapSizeChanged =
-      profile.renderer.shadowMapSize !== previous.renderer.shadowMapSize
     this.presentationProfile = profile
 
     if (sizeChanged || framingChanged) {
-      applyPresentationCameraProjection(this.camera, profile)
-      this.cameraTarget.copy(profile.camera.target)
-      this.updateCameraOrbitPose()
-    }
-    if (pixelRatioChanged) {
-      this.renderer.setPixelRatio(profile.renderer.pixelRatio)
+      this.cameraDirector.setProfile(profile)
     }
     if (sizeChanged) {
       this.renderer.setSize(profile.viewport.width, profile.viewport.height)
     }
-    if (shadowsChanged) {
-      this.renderer.shadowMap.enabled = profile.renderer.shadows
-      invalidateShadowAwareMaterials(this.scene)
-    }
-    if (
-      profile.renderer.shadowAutoUpdate !==
-      previous.renderer.shadowAutoUpdate
-    ) {
+    if (profile.renderer.shadowAutoUpdate !== previous.renderer.shadowAutoUpdate) {
       this.renderer.shadowMap.autoUpdate = profile.renderer.shadowAutoUpdate
     }
-    if (shadowMapSizeChanged) {
-      configureKeyLightShadow(this.keyLight, profile.renderer.shadowMapSize)
-    }
-    if (
-      profile.renderer.shadows &&
-      (shadowsChanged || shadowMapSizeChanged)
-    ) {
-      this.renderer.shadowMap.needsUpdate = true
-    }
+    // DPR、阴影开关与阴影贴图尺寸统一走 applyQuality，避免 profile 与画质档
+    // 两条路径各写一半、互相覆盖。
+    this.applyQuality()
 
-    if (profile.capturedDisplayMode !== previous.capturedDisplayMode) {
-      const showCapturedDisplays =
-        profile.capturedDisplayMode === 'side-columns'
-      for (const token of this.capturedDisplayMeshes.values()) {
-        token.visible = showCapturedDisplays
-      }
-    }
-    if (profile.textures.assetTier !== previous.textures.assetTier) {
-      this.reloadPresentationTextures()
-    }
+    this.pieces.setProfile(profile)
+    this.textures.setProfile(profile)
   }
 
   setPresentationTime(timeMs: number): void {
     this.presentationTimeMs = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0
     this.arenaEnvironment.update(this.presentationTimeMs)
+    // 一次性特效（落步扬尘）与角色辉光/光点也走模拟时钟，回放与手动时钟才能复现。
+    this.effects.update(this.presentationTimeMs)
+    this.pieces.update(this.presentationTimeMs)
   }
 
   /** 由统一 pointer 手势驱动，仅环绕 Y 轴，不改变 profile 的俯角与投影。 */
   rotateViewByCssDelta(deltaXCss: number): boolean {
-    const nextYaw = cameraOrbitYawAfterDrag(
-      this.cameraYawOffsetRadians,
-      deltaXCss,
-    )
-    if (nextYaw === this.cameraYawOffsetRadians) return false
-    this.cameraYawOffsetRadians = nextYaw
-    this.updateCameraOrbitPose()
-    return true
+    return this.cameraDirector.rotateByCssDelta(deltaXCss)
   }
 
   setViewDragging(dragging: boolean): void {
-    this.cameraViewDragging = dragging
+    this.cameraDirector.setDragging(dragging)
     this.renderer.domElement.style.cursor = dragging ? 'grabbing' : 'grab'
   }
 
-  private updateCameraOrbitPose(): void {
-    const profileCamera = this.presentationProfile.camera
-    this.cameraTarget.copy(profileCamera.target)
-    const baseOrbitPosition = resolveCameraOrbitPosition(
-      profileCamera.position,
-      profileCamera.target,
-      this.cameraYawOffsetRadians,
+  // ------------------------------------------------------ AnimationSurface
+
+  snapTo(state: GameState): void {
+    this.pieces.sync(state)
+  }
+
+  setPiecePose(pieceId: string, pose: PiecePose): boolean {
+    return this.pieces.setPose(pieceId, pose)
+  }
+
+  setMoveTrail(
+    from: BoardCoord,
+    to: BoardCoord,
+    progress: number,
+    opacity: number,
+    side: Side,
+  ): void {
+    this.effects.setMoveTrail(from, to, progress, opacity, side)
+  }
+
+  setCannonProjectile(
+    pose: PiecePose,
+    trailFrom: PiecePose,
+    opacity: number,
+  ): void {
+    this.effects.setCannonProjectile(pose, trailFrom, opacity)
+  }
+
+  setCaptureImpact(
+    square: BoardCoord,
+    whiteProgress: number,
+    orangeProgress: number,
+  ): void {
+    this.effects.setCaptureImpact(square, whiteProgress, orangeProgress)
+  }
+
+  setPieceDissolve(pieceId: string, progress: number): void {
+    this.pieces.setDissolve(pieceId, progress)
+  }
+
+  setPieceAttackPose(pieceId: string, active: boolean): void {
+    this.pieces.setAttackPose(pieceId, active)
+  }
+
+  setWindupTell(
+    square: BoardCoord,
+    progress: number,
+    strength: number,
+    side: Side,
+  ): void {
+    this.effects.setWindupTell(square, progress, strength, side)
+  }
+
+  setClaimPulse(square: BoardCoord, progress: number, strength: number): void {
+    this.effects.setClaimPulse(square, progress, strength)
+  }
+
+  /**
+   * 切换运行时画质档。与设备 profile 逐项取较严者后一次性下发；
+   * 只在真正变化时重建阴影贴图，避免抖动时反复付出重建代价。
+   */
+  setQualityTier(tier: QualityTier): void {
+    if (tier === this.qualityTier) return
+    this.qualityTier = tier
+    this.applyQuality()
+  }
+
+  getQualityTier(): QualityTier {
+    return this.qualityTier
+  }
+
+  private applyQuality(): void {
+    const previous = this.effectiveQuality
+    const quality = resolveEffectiveQuality(
+      this.presentationProfile,
+      this.qualityTier,
     )
-    const offset = this.cameraOrbitOffset.set(
-      baseOrbitPosition.x - this.cameraTarget.x,
-      baseOrbitPosition.y - this.cameraTarget.y,
-      baseOrbitPosition.z - this.cameraTarget.z,
+    this.effectiveQuality = quality
+    if (quality.pixelRatio !== previous?.pixelRatio) {
+      this.renderer.setPixelRatio(quality.pixelRatio)
+    }
+    if (quality.shadows !== previous?.shadows) {
+      this.renderer.shadowMap.enabled = quality.shadows
+      invalidateShadowAwareMaterials(this.scene)
+    }
+    if (quality.shadowMapSize !== previous?.shadowMapSize) {
+      configureKeyLightShadow(this.keyLight, quality.shadowMapSize)
+    }
+    if (
+      quality.shadows &&
+      (quality.shadows !== previous?.shadows ||
+        quality.shadowMapSize !== previous?.shadowMapSize)
+    ) {
+      this.renderer.shadowMap.needsUpdate = true
+    }
+    this.effects.setQualityBudget(quality)
+    this.pieces.setQualityBudget(quality)
+  }
+
+  /** 战术俯视：离散备用构图 + 隐藏立绘，两者必须同时切换。 */
+  setTacticalView(active: boolean): void {
+    this.cameraDirector.setTacticalView(active)
+    this.pieces.setFlatMode(active)
+  }
+
+  isTacticalView(): boolean {
+    return this.cameraDirector.isTacticalView()
+  }
+
+  setCombatFocus(
+    square: BoardCoord | null,
+    amount: number,
+    strength: number,
+  ): void {
+    if (!square) {
+      this.cameraDirector.setCombatFocus(null, 0)
+      return
+    }
+    this.cameraDirector.setCombatFocus(
+      fileRankToWorld(square.file, square.rank),
+      amount * strength,
     )
-    this.cameraOrbitFramingScale = this.resolveOrbitFramingScale(offset)
-    const fogRange = resolveCameraOrbitFogRange(
-      LIGHTING.fogNear,
-      LIGHTING.fogFar,
-      this.cameraOrbitFramingScale,
+  }
+
+  onAnimationEvent(event: AnimationEvent): void {
+    this.effects.onEvent(event)
+  }
+
+  clearTransientEffects(): void {
+    this.effects.clear()
+    // 消散与剧情镜头都是持久状态，取消路径必须一并复位，
+    // 否则演出中途悔棋会留下半透明棋子或偏移的镜头。
+    this.pieces.clearDissolve()
+    this.pieces.clearAttackPoses()
+    this.cameraDirector.clearCinematic()
+  }
+
+  // --------------------------------------------------------------- 交互
+
+  /** 将浏览器坐标投射为棋盘交点。 */
+  pickSquare(clientX: number, clientY: number): BoardCoord | null {
+    const rect = this.renderer.domElement.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+
+    // 规则拾取只使用无剧情推进、无震屏的轨道相机。
+    const camera = this.cameraDirector.composeForPicking()
+
+    this.pointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
     )
+    this.raycaster.setFromCamera(this.pointer, camera)
+    const hit = new THREE.Vector3()
+    const hitsPlane = this.raycaster.ray.intersectPlane(this.boardPlane, hit)
+    const planeDistance = hitsPlane
+      ? this.raycaster.ray.origin.distanceTo(hit)
+      : Number.POSITIVE_INFINITY
+
+    // 立绘有一格多高，会盖住身后的交点。命中棋子碰撞体且比地面更近时，
+    // 说明用户瞄的是这枚棋子而不是它背后的空点。
+    const pieceHit = this.pieces.raycastColliders(this.raycaster)
+    if (pieceHit && pieceHit.distance < planeDistance) return pieceHit.square
+
+    if (!hitsPlane) return null
+    const file = Math.round(hit.x / CELL + 4)
+    const rank = Math.round(hit.z / CELL + 4.5)
+    if (file < 0 || file > 8 || rank < 0 || rank > 9) return null
+    return { file, rank }
+  }
+
+  /** 交点在屏幕上的 CSS 坐标，供自动化验收精确点击。 */
+  projectSquare(file: number, rank: number): { x: number; y: number } {
+    const world = fileRankToWorld(file, rank)
+    return this.cameraDirector.projectBoardPoint(world.x, world.z)
+  }
+
+  setInteractionState(
+    state: GameState,
+    selectedId: string | null,
+    legalMoves: readonly Move[],
+  ): void {
+    this.clearMarkers()
+    this.pieces.resetScales()
+
+    if (selectedId) {
+      const selected = state.pieces.find((piece) => piece.id === selectedId)
+      if (selected && !selected.captured) {
+        this.addMarker(selected.file, selected.rank, 'select')
+        this.pieces.emphasize(selected.id, 1.08)
+      }
+    }
+
+    for (const move of legalMoves) {
+      this.addMarker(
+        move.to.file,
+        move.to.rank,
+        move.capturedId ? 'capture' : 'legal',
+      )
+    }
+    this.setCheckState(state)
+  }
+
+  // --------------------------------------------------------------- 渲染
+
+  render(): void {
+    this.updateAmbientMotion()
+    // 广告牌与资源可见性都基于轨道层：剧情推进不得改变角色朝向。
+    this.cameraDirector.composeForPicking()
+    this.syncViewerFacing()
+    this.pieces.orientBillboards(this.cameraDirector.getRestPosition())
+    this.pieces.syncAssetVisibility()
+
+    this.effects.getCameraShake(this.cameraShakeOffset)
+    this.cameraDirector.composeForRender(this.cameraShakeOffset)
+    this.renderer.render(this.scene, this.cameraDirector.camera)
+    // 渲染后立刻回到轨道层，震屏与剧情偏移不进入任何持久状态。
+    this.cameraDirector.composeForPicking()
+  }
+
+  getPresentationSnapshot(state: GameState) {
+    const boardProjection = this.cameraDirector.measureBoardProjection()
+    const colorAssets = (['red', 'black'] as const).flatMap((side) =>
+      PIECE_KINDS.map((kind) => getCharacterVisualSpec(side, kind).colorAssetUrl),
+    )
+    const maskAssets = PIECE_KINDS.map(
+      (kind) => getCharacterVisualSpec('red', kind).alphaAssetUrl,
+    )
+    const presentationAssets = [...new Set([...colorAssets, ...maskAssets])]
+
+    return {
+      renderer: CHARACTER_VISUAL_MODE,
+      assetRevision: 'locked-v3',
+      billboard: 'cylindrical-y-with-faction-facing',
+      sharedShapeAcrossFactions: false,
+      factionSpecificArt: true,
+      shadows: this.renderer.shadowMap.enabled,
+      quality: this.effectiveQuality,
+      presentationProfile: this.presentationProfile,
+      viewport: this.presentationProfile.viewport,
+      cameraProfile: this.presentationProfile.camera,
+      cameraView: {
+        ...this.cameraDirector.getViewSnapshot(),
+        characterViewBySide: this.pieces.getViewBySide(),
+        boardTypography: {
+          viewerSide: this.boardViewerSide,
+          rotationDegrees: this.boardViewerSide === 'red' ? 180 : 0,
+        },
+      },
+      textureRuntime: this.textures.getRuntimeSnapshot(presentationAssets),
+      projectedBoardBoundsCss: boardProjection.bounds,
+      safeBoundsCss: boardProjection.safeBounds,
+      projectedCellSpacingCss: boardProjection.cellSpacing,
+      projectedCellSpacingByAxisCss: boardProjection.cellSpacingByAxis,
+      boardFullyVisible: boardProjection.fullyVisible,
+      boardClearOfHud: boardProjection.clearOfHud,
+      checkPulseActive: Boolean(this.checkMarker?.visible),
+      checkAlarm: {
+        active: Boolean(this.checkMarker?.visible),
+        stage:
+          !this.checkMarker?.visible
+            ? 'idle'
+            : this.checkFlareEnvelope() > 0
+              ? 'flare'
+              : 'watch',
+        flare: Math.round(this.checkFlareEnvelope() * 1000) / 1000,
+        flareDurationMs: CHECK_FLARE_MS,
+      },
+      environment: this.arenaEnvironment.getSnapshot(),
+      battleEffects: this.effects.getSnapshot(),
+      ...this.pieces.getSnapshot(state),
+      readyAssets: this.textures.countByStatus(colorAssets, 'ready'),
+      expectedAssets: colorAssets.length,
+      readyMasks: this.textures.countByStatus(maskAssets, 'ready'),
+      expectedMasks: maskAssets.length,
+      loadingAssets: this.textures.filterByStatus(colorAssets, 'loading'),
+      failedAssets: this.textures.filterByStatus(colorAssets, 'failed'),
+      loadingMasks: this.textures.filterByStatus(maskAssets, 'loading'),
+      failedMasks: this.textures.filterByStatus(maskAssets, 'failed'),
+    }
+  }
+
+  // --------------------------------------------------------------- 内部
+
+  private handleCameraPoseChanged(): void {
+    if (!this.componentsReady) return
+    const fogRange = this.cameraDirector.getFogRange()
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = fogRange.near
       this.scene.fog.far = fogRange.far
     }
-    this.cameraRestPosition
-      .copy(this.cameraTarget)
-      .addScaledVector(offset, this.cameraOrbitFramingScale)
-    this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(this.cameraTarget)
-    this.camera.updateMatrixWorld(true)
     this.syncViewerFacing()
   }
 
-  private buildBoard() {
+  /** 棋盘文字与角色正背面共用同一份滞回，避免侧视时两者步调不一致。 */
+  private syncViewerFacing(): void {
+    const bearing = this.cameraDirector.getBearing()
+    this.pieces.syncFacing(bearing)
+    this.boardViewerSide = resolveBoardViewerSide(bearing, this.boardViewerSide)
+    if (this.boardTypography) {
+      this.boardTypography.rotation.z =
+        this.boardViewerSide === 'red' ? Math.PI : 0
+    }
+  }
+
+  private updateAmbientMotion(): void {
+    const wave = (Math.sin(this.presentationTimeMs * 0.007) + 1) / 2
+    for (const marker of this.markerRoot.children) {
+      const kind = marker.userData.markerKind as string | undefined
+      if (kind === 'select') {
+        marker.scale.setScalar(0.98 + wave * 0.08)
+      } else if (kind === 'capture') {
+        marker.scale.setScalar(1 + wave * 0.05)
+      }
+    }
+    if (this.checkMarker?.visible) {
+      const flare = this.checkFlareEnvelope()
+      const eased = flare * flare
+      this.checkMarker.scale.setScalar(1 + wave * 0.09 + eased * 0.62)
+      this.checkMarker.material.opacity = Math.min(
+        1,
+        CHECK_WATCH_OPACITY + wave * 0.14 + eased * 0.78,
+      )
+    }
+  }
+
+  private addMarker(
+    file: number,
+    rank: number,
+    kind: 'select' | 'legal' | 'capture',
+  ): void {
+    const url = {
+      select: '/assets/ui/ring_select_gold.png',
+      legal: '/assets/ui/ring_legal_white.png',
+      capture: '/assets/ui/ring_capture_red.png',
+    }[kind]
+    const marker = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.92, 0.92),
+      new THREE.MeshBasicMaterial({
+        map: this.textures.get(url),
+        transparent: true,
+        opacity: kind === 'legal' ? 0.78 : 0.96,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    )
+    marker.name = `${kind}-marker-${file}-${rank}`
+    marker.userData.markerKind = kind
+    marker.rotation.x = -Math.PI / 2
+    const position = fileRankToWorld(file, rank)
+    marker.position.set(position.x, 0.035, position.z)
+    marker.renderOrder = 2
+    this.markerRoot.add(marker)
+  }
+
+  private clearMarkers(): void {
+    for (const child of this.markerRoot.children) {
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose()
+        const materials = Array.isArray(child.material)
+          ? child.material
+          : [child.material]
+        for (const material of materials) material.dispose()
+      }
+    }
+    this.markerRoot.clear()
+  }
+
+  private setCheckState(state: GameState): void {
+    if (!state.inCheck || state.status !== 'playing') {
+      if (this.checkMarker) this.checkMarker.visible = false
+      this.checkFlareStartMs = -1
+      this.checkSquareKey = ''
+      return
+    }
+    const king = state.pieces.find(
+      (piece) =>
+        !piece.captured &&
+        piece.side === state.sideToMove &&
+        piece.kind === 'king',
+    )
+    if (!king) return
+    if (!this.checkMarker) {
+      this.checkMarker = new THREE.Mesh(
+        new THREE.RingGeometry(0.43, 0.52, 48),
+        new THREE.MeshBasicMaterial({
+          color: 0xff3b30,
+          transparent: true,
+          opacity: 0.58,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: true,
+          toneMapped: false,
+          side: THREE.DoubleSide,
+        }),
+      )
+      this.checkMarker.name = 'king-in-check-pulse'
+      this.checkMarker.rotation.x = -Math.PI / 2
+      this.checkMarker.renderOrder = 3
+      this.boardRoot.add(this.checkMarker)
+    }
+    const position = fileRankToWorld(king.file, king.rank)
+    this.checkMarker.position.set(position.x, 0.052, position.z)
+    this.checkMarker.visible = true
+
+    // 将军拆成两段：宣告瞬间来一次强 flare，随后退到低亮 watch 长驻。
+    // 长期高亮会盖住棋盘，也让「刚被将」和「一直被将」读起来一样。
+    const squareKey = `${state.sideToMove}:${king.file},${king.rank}`
+    if (squareKey !== this.checkSquareKey) {
+      this.checkSquareKey = squareKey
+      this.checkFlareStartMs = this.presentationTimeMs
+    }
+  }
+
+  /** 0–1 的 flare 包络；模拟时钟驱动，因此悔棋与回放完全可复现。 */
+  private checkFlareEnvelope(): number {
+    if (this.checkFlareStartMs < 0) return 0
+    const elapsed = this.presentationTimeMs - this.checkFlareStartMs
+    if (elapsed < 0 || elapsed >= CHECK_FLARE_MS) return 0
+    return 1 - elapsed / CHECK_FLARE_MS
+  }
+
+  private buildBoard(): void {
     const base = new THREE.Mesh(
       new THREE.BoxGeometry(BOARD_W + 1.35, 0.3, BOARD_H + 1.35),
       new THREE.MeshStandardMaterial({
@@ -378,16 +689,8 @@ export class BoardScene implements AnimationSurface {
       metalness: 0.58,
       roughness: 0.4,
     })
-    const horizontalTrimGeometry = new THREE.BoxGeometry(
-      BOARD_W + 0.86,
-      0.07,
-      0.09,
-    )
-    const verticalTrimGeometry = new THREE.BoxGeometry(
-      0.09,
-      0.07,
-      BOARD_H + 0.86,
-    )
+    const horizontalTrimGeometry = new THREE.BoxGeometry(BOARD_W + 0.86, 0.07, 0.09)
+    const verticalTrimGeometry = new THREE.BoxGeometry(0.09, 0.07, BOARD_H + 0.86)
     for (const z of [-BOARD_H / 2 - 0.37, BOARD_H / 2 + 0.37]) {
       const trim = new THREE.Mesh(horizontalTrimGeometry, trimMaterial)
       trim.position.set(0, 0.035, z)
@@ -405,17 +708,17 @@ export class BoardScene implements AnimationSurface {
     const points: THREE.Vector3[] = []
 
     // 边线贯穿全盘；内部竖线在楚河汉界处断开。
-    for (let f = 0; f <= 8; f++) {
-      const x = (f - 4) * CELL
-      if (f === 0 || f === 8) {
+    for (let file = 0; file <= 8; file += 1) {
+      const x = (file - 4) * CELL
+      if (file === 0 || file === 8) {
         addLine(points, x, -BOARD_H / 2, x, BOARD_H / 2)
       } else {
         addLine(points, x, -BOARD_H / 2, x, -CELL / 2)
         addLine(points, x, CELL / 2, x, BOARD_H / 2)
       }
     }
-    for (let r = 0; r <= 9; r++) {
-      const z = (r - 4.5) * CELL
+    for (let rank = 0; rank <= 9; rank += 1) {
+      const z = (rank - 4.5) * CELL
       addLine(points, -BOARD_W / 2, z, BOARD_W / 2, z)
     }
 
@@ -464,1203 +767,6 @@ export class BoardScene implements AnimationSurface {
     this.boardTypography = typography
     this.boardRoot.add(typography)
   }
-
-  /** 根据权威局面同步棋子 mesh。 */
-  syncPieces(state: GameState) {
-    const alive = new Set<string>()
-    for (const p of state.pieces) {
-      if (p.captured) continue
-      alive.add(p.id)
-      let g = this.pieceMeshes.get(p.id)
-      if (
-        g &&
-        (g.userData.pieceKind !== p.kind || g.userData.side !== p.side)
-      ) {
-        this.boardRoot.remove(g)
-        disposeObject(g)
-        this.pieceMeshes.delete(p.id)
-        g = undefined
-      }
-      if (!g) {
-        g = this.createPieceMesh(p.kind, p.side, pieceLabel(p.kind, p.side))
-        g.name = `piece-${p.id}`
-        g.userData.pieceId = p.id
-        g.userData.pieceKind = p.kind
-        g.userData.side = p.side
-        this.pieceMeshes.set(p.id, g)
-        this.boardRoot.add(g)
-      }
-      const pos = fileRankToWorld(p.file, p.rank)
-      g.position.set(pos.x, 0.05, pos.z)
-      g.rotation.set(0, 0, 0)
-      g.scale.setScalar(1)
-      g.visible = true
-    }
-    for (const [id, mesh] of this.pieceMeshes) {
-      if (!alive.has(id)) {
-        this.boardRoot.remove(mesh)
-        disposeObject(mesh)
-        this.pieceMeshes.delete(id)
-      }
-    }
-    this.syncCapturedDisplay(state)
-  }
-
-  private syncCapturedDisplay(state: GameState): void {
-    const captured = new Set<string>()
-    const bySide: Record<Side, Piece[]> = { red: [], black: [] }
-    for (const piece of state.pieces) {
-      if (!piece.captured) continue
-      captured.add(piece.id)
-      bySide[piece.side].push(piece)
-    }
-
-    for (const side of ['red', 'black'] as const) {
-      bySide[side].forEach((piece, index) => {
-        let token = this.capturedDisplayMeshes.get(piece.id)
-        if (!token) {
-          token = this.createPieceMesh(
-            piece.kind,
-            piece.side,
-            pieceLabel(piece.kind, piece.side),
-          )
-          token.name = `captured-display-${piece.id}`
-          token.userData.pieceId = piece.id
-          token.userData.pieceKind = piece.kind
-          token.userData.side = piece.side
-          token.userData.capturedDisplay = true
-          this.capturedDisplayMeshes.set(piece.id, token)
-          this.boardRoot.add(token)
-        }
-        const column = Math.floor(index / 8)
-        const row = index % 8
-        const direction = side === 'red' ? -1 : 1
-        token.position.set(
-          direction * (5.05 + column * 0.58),
-          0.05,
-          -3.15 + row * 0.88,
-        )
-        token.rotation.set(0, 0, 0)
-        token.scale.setScalar(0.46)
-        token.visible =
-          this.presentationProfile.capturedDisplayMode === 'side-columns'
-      })
-    }
-
-    for (const [id, token] of this.capturedDisplayMeshes) {
-      if (captured.has(id)) continue
-      this.boardRoot.remove(token)
-      disposeObject(token)
-      this.capturedDisplayMeshes.delete(id)
-    }
-  }
-
-  snapTo(state: GameState): void {
-    this.syncPieces(state)
-  }
-
-  setPiecePose(pieceId: string, pose: PiecePose): boolean {
-    const mesh = this.pieceMeshes.get(pieceId)
-    if (!mesh) return false
-    const position = fileRankToWorld(pose.file, pose.rank)
-    mesh.position.set(position.x, 0.05 + pose.lift, position.z)
-    mesh.scale.setScalar(pose.scale)
-    mesh.rotation.y = pose.rotationY
-    return true
-  }
-
-  private createPieceMesh(
-    kind: PieceKind,
-    side: Side,
-    label: string,
-  ): THREE.Group {
-    const g = new THREE.Group()
-    const faction = FACTION_COLORS[side]
-    const radius = (OCCUPANCY_DIAMETER / 2) * 0.9
-
-    const contactShadow = new THREE.Mesh(
-      new THREE.CircleGeometry(radius * 1.06, 28),
-      new THREE.MeshBasicMaterial({
-        color: 0x050509,
-        transparent: true,
-        opacity: 0.42,
-        depthWrite: false,
-      }),
-    )
-    contactShadow.name = 'piece-contact-shadow'
-    contactShadow.rotation.x = -Math.PI / 2
-    contactShadow.position.y = 0.045
-    contactShadow.scale.set(1.15, 0.64, 1)
-    contactShadow.renderOrder = 1
-    g.add(contactShadow)
-
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(radius * 0.92, radius, 0.22, 32),
-      new THREE.MeshStandardMaterial({
-        color: faction.body,
-        metalness: 0.48,
-        roughness: 0.42,
-        emissive: faction.emissive,
-        emissiveIntensity: faction.emissiveIntensity,
-      }),
-    )
-    body.name = 'piece-base-body'
-    body.position.y = 0.12
-    body.castShadow = true
-    body.receiveShadow = true
-    g.add(body)
-
-    // 使用 production 定稿底座 PNG；红黑只换材质，不更换棋种造型。
-    const face = new THREE.Mesh(
-      new THREE.PlaneGeometry(radius * 2.02, radius * 2.02),
-      new THREE.MeshBasicMaterial({
-        map: this.loadTexture(`/assets/bases/base_${side}_${label}.png`),
-        transparent: true,
-        alphaTest: 0.02,
-        side: THREE.DoubleSide,
-      }),
-    )
-    face.rotation.x = -Math.PI / 2
-    face.position.y = 0.235
-    g.add(face)
-
-    g.add(this.createCharacterCard(kind, side))
-
-    return g
-  }
-
-  private createCharacterCard(kind: PieceKind, side: Side): THREE.Group {
-    const spec = getCharacterVisualSpec(side, kind)
-    const layout = spec.layout
-    const maskTexture = this.loadTexture(spec.alphaAssetUrl)
-    const colorTexture = this.loadTexture(spec.colorAssetUrl)
-    const card = new THREE.Group()
-    card.name = 'role-billboard'
-    card.position.y = ROLE_BASE_TOP
-    card.userData.assetUrl = spec.colorAssetUrl
-    card.userData.maskAssetUrl = spec.alphaAssetUrl
-    card.userData.fallbackAssetUrl = spec.fallbackAssetUrl
-    card.userData.kind = kind
-    card.userData.side = side
-
-    const rimGeometry = new THREE.PlaneGeometry(
-      layout.planeWidth,
-      layout.planeHeight,
-    )
-    rimGeometry.translate(
-      layout.geometryOffsetX,
-      layout.geometryOffsetY,
-      0,
-    )
-    const rim = new THREE.Mesh(
-      rimGeometry,
-      createSilhouetteMaterial(
-        maskTexture,
-        SILHOUETTE_COLORS[side].rim,
-      ),
-    )
-    rim.name = 'role-rim'
-    rim.scale.setScalar(ROLE_RIM_SCALE)
-    rim.renderOrder = 4
-    rim.visible = false
-    card.add(rim)
-
-    const fallbackGeometry = new THREE.PlaneGeometry(
-      layout.planeWidth,
-      layout.planeHeight,
-    )
-    fallbackGeometry.translate(
-      layout.geometryOffsetX,
-      layout.geometryOffsetY,
-      0,
-    )
-    const fallback = new THREE.Mesh(
-      fallbackGeometry,
-      createSilhouetteMaterial(
-        maskTexture,
-        SILHOUETTE_COLORS[side].body,
-      ),
-    )
-    fallback.name = 'role-fallback'
-    fallback.position.z = 0.008
-    fallback.renderOrder = 5
-    fallback.visible = false
-    card.add(fallback)
-
-    const geometricPlaceholder = createGeometricCharacterPlaceholder(
-      side,
-      spec.visibleHeight,
-    )
-    geometricPlaceholder.visible = true
-    card.add(geometricPlaceholder)
-
-    const colorGeometry = new THREE.PlaneGeometry(
-      layout.planeWidth,
-      layout.planeHeight,
-    )
-    colorGeometry.translate(
-      layout.geometryOffsetX,
-      layout.geometryOffsetY,
-      0,
-    )
-    const colorBody = new THREE.Mesh(
-      colorGeometry,
-      createCharacterCardMaterial(colorTexture, maskTexture),
-    )
-    colorBody.name = 'role-color-body'
-    colorBody.position.z = 0.012
-    colorBody.renderOrder = 6
-    colorBody.visible = false
-    card.add(colorBody)
-
-    return card
-  }
-
-  /** 将浏览器坐标投射为棋盘交点。 */
-  pickSquare(clientX: number, clientY: number): BoardCoord | null {
-    const rect = this.renderer.domElement.getBoundingClientRect()
-    if (!rect.width || !rect.height) return null
-
-    // 规则拾取只使用无震屏的轨道相机，避免命中演出改变落点射线。
-    this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(this.cameraTarget)
-    this.camera.updateMatrixWorld(true)
-
-    this.pointer.set(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1,
-    )
-    this.raycaster.setFromCamera(this.pointer, this.camera)
-    const hit = new THREE.Vector3()
-    if (!this.raycaster.ray.intersectPlane(this.boardPlane, hit)) return null
-
-    const file = Math.round(hit.x / CELL + 4)
-    const rank = Math.round(hit.z / CELL + 4.5)
-    if (file < 0 || file > 8 || rank < 0 || rank > 9) return null
-    return { file, rank }
-  }
-
-  setInteractionState(
-    state: GameState,
-    selectedId: string | null,
-    legalMoves: readonly Move[],
-  ): void {
-    this.clearMarkers()
-    for (const mesh of this.pieceMeshes.values()) mesh.scale.setScalar(1)
-
-    if (selectedId) {
-      const selected = state.pieces.find((piece) => piece.id === selectedId)
-      if (selected && !selected.captured) {
-        this.addMarker(selected.file, selected.rank, 'select')
-        this.pieceMeshes.get(selected.id)?.scale.setScalar(1.08)
-      }
-    }
-
-    for (const move of legalMoves) {
-      this.addMarker(
-        move.to.file,
-        move.to.rank,
-        move.capturedId ? 'capture' : 'legal',
-      )
-    }
-    this.setCheckState(state)
-  }
-
-  private addMarker(
-    file: number,
-    rank: number,
-    kind: 'select' | 'legal' | 'capture',
-  ): void {
-    const url = {
-      select: '/assets/ui/ring_select_gold.png',
-      legal: '/assets/ui/ring_legal_white.png',
-      capture: '/assets/ui/ring_capture_red.png',
-    }[kind]
-    const marker = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.92, 0.92),
-      new THREE.MeshBasicMaterial({
-        map: this.loadTexture(url),
-        transparent: true,
-        opacity: kind === 'legal' ? 0.78 : 0.96,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    )
-    marker.name = `${kind}-marker-${file}-${rank}`
-    marker.userData.markerKind = kind
-    marker.rotation.x = -Math.PI / 2
-    const position = fileRankToWorld(file, rank)
-    marker.position.set(position.x, 0.035, position.z)
-    marker.renderOrder = 2
-    this.markerRoot.add(marker)
-  }
-
-  private clearMarkers(): void {
-    for (const child of this.markerRoot.children) {
-      if (child instanceof THREE.Mesh) {
-        child.geometry.dispose()
-        const materials = Array.isArray(child.material)
-          ? child.material
-          : [child.material]
-        for (const material of materials) material.dispose()
-      }
-    }
-    this.markerRoot.clear()
-  }
-
-  private setCheckState(state: GameState): void {
-    if (!state.inCheck || state.status !== 'playing') {
-      if (this.checkMarker) this.checkMarker.visible = false
-      return
-    }
-    const king = state.pieces.find(
-      (piece) =>
-        !piece.captured &&
-        piece.side === state.sideToMove &&
-        piece.kind === 'king',
-    )
-    if (!king) return
-    if (!this.checkMarker) {
-      this.checkMarker = new THREE.Mesh(
-        new THREE.RingGeometry(0.43, 0.52, 48),
-        new THREE.MeshBasicMaterial({
-          color: 0xff3b30,
-          transparent: true,
-          opacity: 0.58,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          depthTest: true,
-          toneMapped: false,
-          side: THREE.DoubleSide,
-        }),
-      )
-      this.checkMarker.name = 'king-in-check-pulse'
-      this.checkMarker.rotation.x = -Math.PI / 2
-      this.checkMarker.renderOrder = 3
-      this.boardRoot.add(this.checkMarker)
-    }
-    const position = fileRankToWorld(king.file, king.rank)
-    this.checkMarker.position.set(position.x, 0.052, position.z)
-    this.checkMarker.visible = true
-  }
-
-  private loadTexture(url: string): THREE.Texture {
-    const cached = this.textureCache.get(url)
-    if (cached) return cached
-    const texture = new THREE.Texture()
-    texture.colorSpace = url.includes('/silhouettes/')
-      ? THREE.NoColorSpace
-      : THREE.SRGBColorSpace
-    texture.anisotropy = Math.min(
-      8,
-      this.renderer.capabilities.getMaxAnisotropy(),
-    )
-    this.textureCache.set(url, texture)
-    this.requestTextureImage(url, texture)
-    return texture
-  }
-
-  private reloadPresentationTextures(): void {
-    for (const [sourceUrl, texture] of this.textureCache) {
-      if (
-        resolvePresentationTextureUrl(sourceUrl, '512') === sourceUrl
-      ) {
-        continue
-      }
-      this.requestTextureImage(sourceUrl, texture)
-    }
-  }
-
-  private requestTextureImage(
-    sourceUrl: string,
-    target: THREE.Texture,
-  ): void {
-    const revision = (this.textureLoadRevision.get(sourceUrl) ?? 0) + 1
-    this.textureLoadRevision.set(sourceUrl, revision)
-    const requestedTier = this.presentationProfile.textures.assetTier
-    const mode = resolvePresentationTextureRequestMode(
-      this.textureStatus.get(sourceUrl),
-      this.textureActiveTier.get(sourceUrl),
-      requestedTier,
-    )
-    this.failedTextureReloads.delete(sourceUrl)
-    if (mode === 'already-active') {
-      this.reloadingTextures.delete(sourceUrl)
-      return
-    }
-    if (mode === 'background-reload') {
-      this.reloadingTextures.add(sourceUrl)
-    } else {
-      this.textureStatus.set(sourceUrl, 'loading')
-    }
-    const resolvedUrl = resolvePresentationTextureUrl(
-      sourceUrl,
-      requestedTier,
-    )
-    this.textureLoader.load(
-      resolvedUrl,
-      (replacement) => {
-        const committed = commitPresentationTextureReplacement(
-          target,
-          replacement.image,
-          revision,
-          this.textureLoadRevision.get(sourceUrl) ?? 0,
-          () => this.configurePresentationTexture(target, sourceUrl),
-        )
-        replacement.dispose()
-        if (!committed) return
-        if (resolvePresentationTextureUrl(sourceUrl, '512') !== sourceUrl) {
-          this.textureActiveTier.set(sourceUrl, requestedTier)
-        }
-        this.reloadingTextures.delete(sourceUrl)
-        this.failedTextureReloads.delete(sourceUrl)
-        this.textureStatus.set(sourceUrl, 'ready')
-      },
-      undefined,
-      (error) => {
-        if (this.textureLoadRevision.get(sourceUrl) !== revision) return
-        const failureStatus =
-          resolvePresentationTextureStatusAfterFailure(mode)
-        if (failureStatus === 'ready') {
-          this.reloadingTextures.delete(sourceUrl)
-          this.failedTextureReloads.add(sourceUrl)
-          console.warn(
-            `[xiangqi-3d] 纹理后台切档失败，继续使用旧图: ${resolvedUrl}`,
-            error,
-          )
-          return
-        }
-        this.textureStatus.set(sourceUrl, failureStatus)
-        console.error(
-          `[xiangqi-3d] 纹理加载失败: ${resolvedUrl}`,
-          error,
-        )
-      },
-    )
-  }
-
-  private configurePresentationTexture(
-    texture: THREE.Texture,
-    sourceUrl: string,
-  ): void {
-    if (resolvePresentationTextureUrl(sourceUrl, '512') === sourceUrl) return
-    const useMipmaps =
-      this.presentationProfile.textures.mipmaps === 'trilinear'
-    texture.generateMipmaps = useMipmaps
-    texture.minFilter = useMipmaps
-      ? THREE.LinearMipmapLinearFilter
-      : THREE.LinearFilter
-    texture.magFilter = THREE.LinearFilter
-  }
-
-  getPresentationSnapshot(state: GameState) {
-    const boardProjection = this.measureBoardProjection()
-    const colorAssets = (['red', 'black'] as const).flatMap((side) =>
-      PIECE_KINDS.map(
-        (kind) => getCharacterVisualSpec(side, kind).colorAssetUrl,
-      ),
-    )
-    const maskAssets = PIECE_KINDS.map(
-      (kind) => getCharacterVisualSpec('red', kind).alphaAssetUrl,
-    )
-    const presentationAssets = [...new Set([...colorAssets, ...maskAssets])]
-    const activeTextureTiers = new Set(
-      presentationAssets
-        .map((url) => this.textureActiveTier.get(url))
-        .filter((tier): tier is CharacterAssetTier => Boolean(tier)),
-    )
-    const renderedKinds = new Set<PieceKind>()
-    let redInstances = 0
-    let blackInstances = 0
-    let fallbackInstances = 0
-    let placeholderInstances = 0
-    let backViewInstances = 0
-    for (const mesh of this.pieceMeshes.values()) {
-      const kind = mesh.userData.pieceKind as PieceKind | undefined
-      if (kind) renderedKinds.add(kind)
-      if (mesh.userData.side === 'red') redInstances += 1
-      if (mesh.userData.side === 'black') blackInstances += 1
-      const card = mesh.getObjectByName('role-billboard')
-      const placeholderVisible =
-        card?.getObjectByName('role-geometric-placeholder')?.visible === true
-      const loadingFallbackVisible =
-        card?.userData.viewMode !== 'back' &&
-        card?.getObjectByName('role-fallback')?.visible === true
-      if (loadingFallbackVisible || placeholderVisible) {
-        fallbackInstances += 1
-      }
-      if (placeholderVisible) {
-        placeholderInstances += 1
-      }
-      if (card?.userData.viewMode === 'back') backViewInstances += 1
-    }
-
-    return {
-      renderer: CHARACTER_VISUAL_MODE,
-      assetRevision: 'locked-v3',
-      billboard: 'cylindrical-y-with-faction-facing',
-      sharedShapeAcrossFactions: false,
-      factionSpecificArt: true,
-      shadows: this.renderer.shadowMap.enabled,
-      presentationProfile: this.presentationProfile,
-      viewport: this.presentationProfile.viewport,
-      cameraProfile: this.presentationProfile.camera,
-      cameraView: {
-        interaction: 'primary-drag-horizontal-orbit',
-        yawOffsetRadians:
-          Math.round(this.cameraYawOffsetRadians * 1_000_000) / 1_000_000,
-        yawOffsetDegrees:
-          Math.round(
-            ((this.cameraYawOffsetRadians * 180) / Math.PI) * 10,
-          ) / 10,
-        framingScale:
-          Math.round(this.cameraOrbitFramingScale * 10_000) / 10_000,
-        dragging: this.cameraViewDragging,
-        position: {
-          x: this.cameraRestPosition.x,
-          y: this.cameraRestPosition.y,
-          z: this.cameraRestPosition.z,
-        },
-        target: {
-          x: this.cameraTarget.x,
-          y: this.cameraTarget.y,
-          z: this.cameraTarget.z,
-        },
-        characterViewBySide: { ...this.characterViewBySide },
-        boardTypography: {
-          viewerSide: this.boardViewerSide,
-          rotationDegrees: this.boardViewerSide === 'red' ? 180 : 0,
-        },
-      },
-      textureRuntime: {
-        requestedTier: this.presentationProfile.textures.assetTier,
-        activeTier:
-          activeTextureTiers.size === 0
-            ? null
-            : activeTextureTiers.size === 1
-              ? [...activeTextureTiers][0]
-              : 'mixed',
-        reloadingAssets: presentationAssets.filter((url) =>
-          this.reloadingTextures.has(url),
-        ),
-        failedReloadAssets: presentationAssets.filter((url) =>
-          this.failedTextureReloads.has(url),
-        ),
-      },
-      projectedBoardBoundsCss: boardProjection.bounds,
-      safeBoundsCss: boardProjection.safeBounds,
-      projectedCellSpacingCss: boardProjection.cellSpacing,
-      projectedCellSpacingByAxisCss: boardProjection.cellSpacingByAxis,
-      boardFullyVisible: boardProjection.fullyVisible,
-      boardClearOfHud: boardProjection.clearOfHud,
-      checkPulseActive: Boolean(this.checkMarker?.visible),
-      environment: this.arenaEnvironment.getSnapshot(),
-      battleEffects: this.battleFeedback.getSnapshot(),
-      logicalAlive: state.pieces.filter((piece) => !piece.captured).length,
-      renderedInstances: this.pieceMeshes.size,
-      capturedDisplayInstances: this.capturedDisplayMeshes.size,
-      capturedDisplayVisibleInstances: [
-        ...this.capturedDisplayMeshes.values(),
-      ].filter((mesh) => mesh.visible).length,
-      capturedDisplayBySide: {
-        red: [...this.capturedDisplayMeshes.values()].filter(
-          (mesh) => mesh.userData.side === 'red',
-        ).length,
-        black: [...this.capturedDisplayMeshes.values()].filter(
-          (mesh) => mesh.userData.side === 'black',
-        ).length,
-      },
-      renderedBySide: { red: redInstances, black: blackInstances },
-      renderedKinds: PIECE_KINDS.filter((kind) => renderedKinds.has(kind)),
-      readyAssets: colorAssets.filter(
-        (url) => this.textureStatus.get(url) === 'ready',
-      ).length,
-      expectedAssets: colorAssets.length,
-      readyMasks: maskAssets.filter(
-        (url) => this.textureStatus.get(url) === 'ready',
-      ).length,
-      expectedMasks: maskAssets.length,
-      fallbackInstances,
-      placeholderInstances,
-      backViewInstances,
-      loadingAssets: colorAssets.filter(
-        (url) => this.textureStatus.get(url) === 'loading',
-      ),
-      failedAssets: colorAssets.filter(
-        (url) => this.textureStatus.get(url) === 'failed',
-      ),
-      loadingMasks: maskAssets.filter(
-        (url) => this.textureStatus.get(url) === 'loading',
-      ),
-      failedMasks: maskAssets.filter(
-        (url) => this.textureStatus.get(url) === 'failed',
-      ),
-    }
-  }
-
-  private resolveOrbitFramingScale(rotatedOffset: THREE.Vector3): number {
-    applyPresentationCameraProjection(
-      this.orbitFitCamera,
-      this.presentationProfile,
-    )
-    this.measureOrbitProjectedBounds(
-      this.presentationProfile.camera.position,
-      this.orbitBaselineBounds,
-    )
-    const { width, height } = this.presentationProfile.viewport
-    const insets = this.presentationProfile.framingInsetsCss
-    this.orbitBaselineBounds.left = Math.max(
-      this.orbitBaselineBounds.left,
-      insets.left,
-    )
-    this.orbitBaselineBounds.right = Math.min(
-      this.orbitBaselineBounds.right,
-      width - insets.right,
-    )
-    this.orbitBaselineBounds.top = Math.max(
-      this.orbitBaselineBounds.top,
-      insets.top,
-    )
-    this.orbitBaselineBounds.bottom = Math.min(
-      this.orbitBaselineBounds.bottom,
-      height - insets.bottom,
-    )
-    const clearsAt = (scale: number) => {
-      this.orbitFitCandidate
-        .copy(this.cameraTarget)
-        .addScaledVector(rotatedOffset, scale)
-      return this.orbitPositionClearsFraming(this.orbitFitCandidate)
-    }
-
-    if (clearsAt(1)) return 1
-    let low = 1
-    let high = 1.25
-    while (high < 4 && !clearsAt(high)) high *= 1.25
-    if (!clearsAt(high)) return high
-    for (let iteration = 0; iteration < 12; iteration += 1) {
-      const middle = (low + high) / 2
-      if (clearsAt(middle)) high = middle
-      else low = middle
-    }
-    return high
-  }
-
-  /** 高频拖动路径复用相机与投影点，避免每次二分都 clone/分配对象。 */
-  private orbitPositionClearsFraming(cameraPosition: THREE.Vector3): boolean {
-    this.measureOrbitProjectedBounds(
-      cameraPosition,
-      this.orbitCandidateBounds,
-    )
-    const bounds = this.orbitCandidateBounds
-    const safe = this.orbitBaselineBounds
-    return (
-      bounds.left >= safe.left &&
-      bounds.right <= safe.right &&
-      bounds.top >= safe.top &&
-      bounds.bottom <= safe.bottom
-    )
-  }
-
-  private measureOrbitProjectedBounds(
-    cameraPosition: {
-      readonly x: number
-      readonly y: number
-      readonly z: number
-    },
-    bounds: { left: number; right: number; top: number; bottom: number },
-  ): void {
-    const camera = this.orbitFitCamera
-    camera.position.set(cameraPosition.x, cameraPosition.y, cameraPosition.z)
-    camera.lookAt(this.cameraTarget)
-    camera.updateMatrixWorld(true)
-
-    const { width, height } = this.presentationProfile.viewport
-    const edgeX = BOARD_W / 2 + 0.47
-    const edgeZ = BOARD_H / 2 + 0.47
-    let left = Number.POSITIVE_INFINITY
-    let right = Number.NEGATIVE_INFINITY
-    let top = Number.POSITIVE_INFINITY
-    let bottom = Number.NEGATIVE_INFINITY
-    for (let xSign = -1; xSign <= 1; xSign += 2) {
-      for (let zSign = -1; zSign <= 1; zSign += 2) {
-        const projected = this.orbitFitPoint
-          .set(xSign * edgeX, 0.05, zSign * edgeZ)
-          .project(camera)
-        const x = ((projected.x + 1) / 2) * width
-        const y = ((1 - projected.y) / 2) * height
-        left = Math.min(left, x)
-        right = Math.max(right, x)
-        top = Math.min(top, y)
-        bottom = Math.max(bottom, y)
-      }
-    }
-    bounds.left = left
-    bounds.right = right
-    bounds.top = top
-    bounds.bottom = bottom
-  }
-
-  private createBoardProjector(cameraPosition: THREE.Vector3) {
-    const { width, height } = this.presentationProfile.viewport
-    const camera = this.camera.clone()
-    camera.position.copy(cameraPosition)
-    camera.lookAt(this.cameraTarget)
-    applyPresentationCameraProjection(camera, this.presentationProfile)
-    camera.updateMatrixWorld(true)
-
-    return (x: number, z: number) => {
-      const point = new THREE.Vector3(x, 0.05, z).project(camera)
-      return {
-        x: ((point.x + 1) / 2) * width,
-        y: ((1 - point.y) / 2) * height,
-      }
-    }
-  }
-
-  private measureBoardProjection(): {
-    bounds: { left: number; right: number; top: number; bottom: number }
-    safeBounds: { left: number; right: number; top: number; bottom: number }
-    cellSpacing: number
-    cellSpacingByAxis: { horizontal: number; vertical: number }
-    fullyVisible: boolean
-    clearOfHud: boolean
-  } {
-    const { width, height } = this.presentationProfile.viewport
-    const project = this.createBoardProjector(this.cameraRestPosition)
-    const rawBounds = projectedBoardBounds(project)
-
-    let horizontal = Number.POSITIVE_INFINITY
-    let vertical = Number.POSITIVE_INFINITY
-    for (let rank = 0; rank <= 9; rank += 1) {
-      for (let file = 0; file < 8; file += 1) {
-        horizontal = Math.min(
-          horizontal,
-          screenDistance(
-            project((file - 4) * CELL, (rank - 4.5) * CELL),
-            project((file + 1 - 4) * CELL, (rank - 4.5) * CELL),
-          ),
-        )
-      }
-    }
-    for (let file = 0; file <= 8; file += 1) {
-      for (let rank = 0; rank < 9; rank += 1) {
-        vertical = Math.min(
-          vertical,
-          screenDistance(
-            project((file - 4) * CELL, (rank - 4.5) * CELL),
-            project((file - 4) * CELL, (rank + 1 - 4.5) * CELL),
-          ),
-        )
-      }
-    }
-
-    const round = (value: number) => Math.round(value * 10) / 10
-    const bounds = {
-      left: round(rawBounds.left),
-      right: round(rawBounds.right),
-      top: round(rawBounds.top),
-      bottom: round(rawBounds.bottom),
-    }
-    const insets = this.presentationProfile.framingInsetsCss
-    const safeBounds = {
-      left: insets.left,
-      right: width - insets.right,
-      top: insets.top,
-      bottom: height - insets.bottom,
-    }
-    const fullyVisible =
-      rawBounds.left >= 0 &&
-      rawBounds.right <= width &&
-      rawBounds.top >= 0 &&
-      rawBounds.bottom <= height
-    return {
-      bounds,
-      safeBounds,
-      cellSpacing: round(Math.min(horizontal, vertical)),
-      cellSpacingByAxis: {
-        horizontal: round(horizontal),
-        vertical: round(vertical),
-      },
-      fullyVisible,
-      clearOfHud:
-        rawBounds.left >= safeBounds.left &&
-        rawBounds.right <= safeBounds.right &&
-        rawBounds.top >= safeBounds.top &&
-        rawBounds.bottom <= safeBounds.bottom,
-    }
-  }
-
-  setMoveTrail(
-    from: BoardCoord,
-    to: BoardCoord,
-    progress: number,
-    opacity: number,
-    side: 'red' | 'black',
-  ): void {
-    if (!this.moveTrail) {
-      this.moveTrail = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.055, 0.14, 1, 10, 1, true),
-        new THREE.MeshBasicMaterial({
-          color: FACTION_COLORS[side].ring,
-          transparent: true,
-          opacity: 0,
-          blending: THREE.AdditiveBlending,
-          depthWrite: false,
-          depthTest: false,
-          toneMapped: false,
-        }),
-      )
-      this.moveTrail.renderOrder = 6
-      this.boardRoot.add(this.moveTrail)
-    }
-
-    const clampedProgress = THREE.MathUtils.clamp(progress, 0, 1)
-    const start = fileRankToWorld(from.file, from.rank)
-    const destination = fileRankToWorld(to.file, to.rank)
-    const end = start.clone().lerp(destination, clampedProgress)
-    start.y = 0.2
-    end.y = 0.2
-    const direction = end.clone().sub(start)
-    const length = direction.length()
-
-    this.moveTrail.visible = opacity > 0.001 && length > 0.001
-    if (!this.moveTrail.visible) return
-    this.moveTrail.position.copy(start).add(end).multiplyScalar(0.5)
-    this.moveTrail.scale.set(1, length, 1)
-    this.moveTrail.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      direction.normalize(),
-    )
-    this.moveTrail.material.color.setHex(FACTION_COLORS[side].ring)
-    this.moveTrail.material.opacity = opacity
-  }
-
-  setCannonProjectile(
-    pose: PiecePose,
-    trailFrom: PiecePose,
-    opacity: number,
-  ): void {
-    const alpha = THREE.MathUtils.clamp(opacity, 0, 1)
-    if (!this.cannonProjectile && alpha <= 0.001) return
-    this.ensureCannonProjectile()
-    if (
-      !this.cannonProjectile ||
-      !this.cannonProjectileCore ||
-      !this.cannonProjectileShell ||
-      !this.cannonProjectileTrail
-    ) {
-      return
-    }
-
-    const position = fileRankToWorld(pose.file, pose.rank)
-    position.y = 0.12 + pose.lift
-    this.cannonProjectile.position.copy(position)
-    this.cannonProjectile.rotation.y = pose.rotationY
-    this.cannonProjectile.scale.setScalar(pose.scale)
-    this.cannonProjectile.visible = alpha > 0.001
-    this.cannonProjectileCore.material.opacity = alpha
-    this.cannonProjectileShell.material.opacity = alpha * 0.35
-
-    const trailOrigin = fileRankToWorld(trailFrom.file, trailFrom.rank)
-    trailOrigin.y = 0.12 + trailFrom.lift
-    const direction = position.clone().sub(trailOrigin)
-    const travelled = direction.length()
-    this.cannonProjectileTrail.visible = alpha > 0.001 && travelled > 0.02
-    if (!this.cannonProjectileTrail.visible) return
-
-    const trailLength = Math.min(0.42, travelled)
-    const unitDirection = direction.normalize()
-    const tail = position.clone().addScaledVector(unitDirection, -trailLength)
-    this.cannonProjectileTrail.position
-      .copy(tail)
-      .add(position)
-      .multiplyScalar(0.5)
-    this.cannonProjectileTrail.scale.set(1, trailLength, 1)
-    this.cannonProjectileTrail.quaternion.setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      unitDirection,
-    )
-    this.cannonProjectileTrail.material.opacity = alpha * 0.55
-  }
-
-  setCaptureImpact(
-    square: BoardCoord,
-    whiteProgress: number,
-    orangeProgress: number,
-  ): void {
-    this.ensureImpactSprites()
-    const position = fileRankToWorld(square.file, square.rank)
-    position.y = 0.62
-    this.battleFeedback.update(position, whiteProgress, orangeProgress)
-
-    if (this.whiteImpact) {
-      this.whiteImpact.position.copy(position)
-      const peak = 70 / 170
-      const p = THREE.MathUtils.clamp(whiteProgress, 0, 1)
-      if (p <= peak) {
-        const t = p / peak
-        setSpriteVisual(
-          this.whiteImpact,
-          p > 0,
-          t,
-          THREE.MathUtils.lerp(0.28, 0.9, t),
-        )
-      } else {
-        const t = (p - peak) / (1 - peak)
-        setSpriteVisual(
-          this.whiteImpact,
-          p < 1,
-          1 - t,
-          THREE.MathUtils.lerp(0.9, 1.15, t),
-        )
-      }
-    }
-
-    if (this.orangeImpact) {
-      this.orangeImpact.position.copy(position)
-      const peak = 180 / 430
-      const p = THREE.MathUtils.clamp(orangeProgress, 0, 1)
-      if (p <= peak) {
-        const t = p / peak
-        setSpriteVisual(
-          this.orangeImpact,
-          p > 0,
-          THREE.MathUtils.lerp(0.9, 0.35, t),
-          THREE.MathUtils.lerp(0.45, 1.2, t),
-        )
-      } else {
-        const t = (p - peak) / (1 - peak)
-        setSpriteVisual(
-          this.orangeImpact,
-          p < 1,
-          0.35 * (1 - t),
-          THREE.MathUtils.lerp(1.2, 1.42, t),
-        )
-      }
-    }
-  }
-
-  clearTransientEffects(): void {
-    if (this.moveTrail) this.moveTrail.visible = false
-    if (this.cannonProjectile) this.cannonProjectile.visible = false
-    if (this.cannonProjectileTrail) {
-      this.cannonProjectileTrail.visible = false
-    }
-    if (this.whiteImpact) this.whiteImpact.visible = false
-    if (this.orangeImpact) this.orangeImpact.visible = false
-    this.battleFeedback.clear()
-  }
-
-  private ensureImpactSprites(): void {
-    if (!this.whiteImpact) {
-      this.whiteImpact = this.createImpactSprite(
-        '/assets/vfx/vfx_blast_white_cyan_alpha.png',
-      )
-    }
-    if (!this.orangeImpact) {
-      this.orangeImpact = this.createImpactSprite(
-        '/assets/vfx/vfx_blast_orange_gold_alpha.png',
-      )
-    }
-  }
-
-  private ensureCannonProjectile(): void {
-    if (this.cannonProjectile) return
-
-    const projectile = new THREE.Group()
-    projectile.name = 'cannon-projectile'
-    projectile.renderOrder = 9
-
-    this.cannonProjectileCore = new THREE.Mesh(
-      new THREE.SphereGeometry(0.065, 16, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0xfff1c2,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    )
-    projectile.add(this.cannonProjectileCore)
-
-    this.cannonProjectileShell = new THREE.Mesh(
-      new THREE.SphereGeometry(0.105, 16, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0xff9d28,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        toneMapped: false,
-      }),
-    )
-    projectile.add(this.cannonProjectileShell)
-    projectile.visible = false
-    this.boardRoot.add(projectile)
-    this.cannonProjectile = projectile
-
-    this.cannonProjectileTrail = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.055, 0.015, 1, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: 0xffb347,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: true,
-        toneMapped: false,
-      }),
-    )
-    this.cannonProjectileTrail.name = 'cannon-projectile-trail'
-    this.cannonProjectileTrail.visible = false
-    this.cannonProjectileTrail.renderOrder = 8
-    this.boardRoot.add(this.cannonProjectileTrail)
-  }
-
-  private createImpactSprite(url: string): THREE.Sprite {
-    const sprite = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.loadTexture(url),
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        depthTest: true,
-        toneMapped: false,
-      }),
-    )
-    sprite.visible = false
-    sprite.renderOrder = 10
-    this.boardRoot.add(sprite)
-    return sprite
-  }
-
-  private syncViewerFacing(): void {
-    const cameraBearing = {
-      x: this.cameraRestPosition.x - this.cameraTarget.x,
-      z: this.cameraRestPosition.z - this.cameraTarget.z,
-    }
-    for (const side of ['red', 'black'] as const) {
-      this.characterViewBySide[side] = resolveFactionCharacterViewMode(
-        side,
-        cameraBearing,
-        this.characterViewBySide[side],
-      )
-    }
-    this.boardViewerSide = resolveBoardViewerSide(
-      cameraBearing,
-      this.boardViewerSide,
-    )
-    if (this.boardTypography) {
-      this.boardTypography.rotation.z =
-        this.boardViewerSide === 'red' ? Math.PI : 0
-    }
-  }
-
-  private orientCharacterBillboards(): void {
-    this.syncViewerFacing()
-
-    const roleRoots = [
-      ...this.pieceMeshes.values(),
-      ...this.capturedDisplayMeshes.values(),
-    ]
-    for (const root of roleRoots) {
-      const card = root.getObjectByName('role-billboard')
-      if (!card) continue
-      const side = root.userData.side as Side
-      card.userData.viewMode = root.userData.capturedDisplay
-        ? 'front'
-        : this.characterViewBySide[side]
-      this.billboardLocalCameraPosition.copy(this.cameraRestPosition)
-      root.worldToLocal(this.billboardLocalCameraPosition)
-      card.rotation.y = Math.atan2(
-        this.billboardLocalCameraPosition.x,
-        this.billboardLocalCameraPosition.z,
-      )
-      card.rotation.x =
-        this.presentationProfile.camera.billboardPitchRadians
-      card.scale.setScalar(this.presentationProfile.camera.billboardScale)
-    }
-  }
-
-  private syncCharacterAssetVisibility(): void {
-    const roleRoots = [
-      ...this.pieceMeshes.values(),
-      ...this.capturedDisplayMeshes.values(),
-    ]
-    for (const root of roleRoots) {
-      const card = root.getObjectByName('role-billboard')
-      if (!card) continue
-      const colorBody = card.getObjectByName('role-color-body')
-      const fallback = card.getObjectByName('role-fallback')
-      const rim = card.getObjectByName('role-rim')
-      const placeholder = card.getObjectByName('role-geometric-placeholder')
-      const assetUrl = card.userData.assetUrl as string | undefined
-      const maskAssetUrl = card.userData.maskAssetUrl as string | undefined
-      const visibility = resolveCharacterLayerVisibility(
-        assetUrl ? this.textureStatus.get(assetUrl) : undefined,
-        maskAssetUrl ? this.textureStatus.get(maskAssetUrl) : undefined,
-      )
-      const backFacing = card.userData.viewMode === 'back'
-      if (colorBody) colorBody.visible = !backFacing && visibility.colorBody
-      // 背向暂用同源轮廓剪影，绝不从背面镜像正脸；有正式背图后替换此层。
-      if (fallback) {
-        fallback.visible = backFacing
-          ? visibility.rim
-          : visibility.silhouette
-      }
-      if (rim) rim.visible = visibility.rim
-      if (placeholder) {
-        placeholder.visible = visibility.geometricPlaceholder
-      }
-      card.userData.visualMode = backFacing
-        ? visibility.rim
-          ? CHARACTER_BACK_VISUAL_MODE
-          : 'geometric-placeholder'
-        : visibility.colorBody
-          ? CHARACTER_VISUAL_MODE
-          : visibility.silhouette
-            ? 'production-v3-silhouette-fallback'
-            : 'geometric-placeholder'
-    }
-  }
-
-  private updateAmbientMotion(): void {
-    const wave = (Math.sin(this.presentationTimeMs * 0.007) + 1) / 2
-    for (const marker of this.markerRoot.children) {
-      const kind = marker.userData.markerKind as string | undefined
-      if (kind === 'select') {
-        marker.scale.setScalar(0.98 + wave * 0.08)
-      } else if (kind === 'capture') {
-        marker.scale.setScalar(1 + wave * 0.05)
-      }
-    }
-    if (this.checkMarker?.visible) {
-      this.checkMarker.scale.setScalar(1 + wave * 0.16)
-      this.checkMarker.material.opacity = 0.34 + wave * 0.38
-    }
-  }
-
-  render() {
-    this.updateAmbientMotion()
-    this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(this.cameraTarget)
-    this.camera.updateMatrixWorld(true)
-    this.orientCharacterBillboards()
-    this.syncCharacterAssetVisibility()
-
-    this.battleFeedback.getCameraOffset(this.cameraShakeOffset)
-    this.camera.position
-      .copy(this.cameraRestPosition)
-      .add(this.cameraShakeOffset)
-    this.camera.lookAt(this.cameraTarget)
-    this.camera.updateMatrixWorld(true)
-    this.renderer.render(this.scene, this.camera)
-    this.camera.position.copy(this.cameraRestPosition)
-    this.camera.lookAt(this.cameraTarget)
-    this.camera.updateMatrixWorld(true)
-  }
 }
 
 function addLine(
@@ -1670,10 +776,7 @@ function addLine(
   x2: number,
   z2: number,
 ): void {
-  points.push(
-    new THREE.Vector3(x1, 0.03, z1),
-    new THREE.Vector3(x2, 0.03, z2),
-  )
+  points.push(new THREE.Vector3(x1, 0.03, z1), new THREE.Vector3(x2, 0.03, z2))
 }
 
 function addBoardLine(
@@ -1686,109 +789,6 @@ function addBoardLine(
   const from = fileRankToWorld(file1, rank1)
   const to = fileRankToWorld(file2, rank2)
   addLine(points, from.x, from.z, to.x, to.z)
-}
-
-function setSpriteVisual(
-  sprite: THREE.Sprite,
-  visible: boolean,
-  opacity: number,
-  scale: number,
-): void {
-  sprite.visible = visible
-  sprite.material.opacity = THREE.MathUtils.clamp(opacity, 0, 1)
-  sprite.scale.setScalar(scale)
-}
-
-function projectedBoardBounds(
-  project: (x: number, z: number) => { x: number; y: number },
-) {
-  const edgeX = BOARD_W / 2 + 0.47
-  const edgeZ = BOARD_H / 2 + 0.47
-  const corners = [
-    project(-edgeX, -edgeZ),
-    project(edgeX, -edgeZ),
-    project(-edgeX, edgeZ),
-    project(edgeX, edgeZ),
-  ]
-  return {
-    left: Math.min(...corners.map((point) => point.x)),
-    right: Math.max(...corners.map((point) => point.x)),
-    top: Math.min(...corners.map((point) => point.y)),
-    bottom: Math.max(...corners.map((point) => point.y)),
-  }
-}
-
-function screenDistance(
-  first: { x: number; y: number },
-  second: { x: number; y: number },
-): number {
-  return Math.hypot(second.x - first.x, second.y - first.y)
-}
-
-function createSilhouetteMaterial(
-  texture: THREE.Texture,
-  color: number,
-): THREE.MeshBasicMaterial {
-  const material = new THREE.MeshBasicMaterial({
-    map: texture,
-    color,
-    transparent: true,
-    opacity: 1,
-    alphaTest: 0.06,
-    depthTest: true,
-    depthWrite: true,
-    side: THREE.FrontSide,
-    toneMapped: false,
-  })
-  material.name = 'production-v3-alpha-silhouette'
-  material.fog = false
-  material.onBeforeCompile = (shader) => {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <map_fragment>',
-      `
-#ifdef USE_MAP
-  vec4 sampledDiffuseColor = texture2D(map, vMapUv);
-  diffuseColor.a *= sampledDiffuseColor.a;
-#endif
-      `,
-    )
-  }
-  material.customProgramCacheKey = () => 'production-v3-alpha-silhouette-v1'
-  return material
-}
-
-function createCharacterCardMaterial(
-  colorTexture: THREE.Texture,
-  maskTexture: THREE.Texture,
-): THREE.MeshBasicMaterial {
-  const material = new THREE.MeshBasicMaterial({
-    map: colorTexture,
-    color: 0xffffff,
-    transparent: true,
-    opacity: 1,
-    alphaTest: 0.06,
-    depthTest: true,
-    depthWrite: true,
-    side: THREE.FrontSide,
-    toneMapped: false,
-  })
-  material.name = 'production-v3-color-card'
-  material.fog = false
-  material.onBeforeCompile = (shader) => {
-    shader.uniforms.roleAlphaMask = { value: maskTexture }
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <map_pars_fragment>',
-      `#include <map_pars_fragment>
-uniform sampler2D roleAlphaMask;`,
-    )
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <map_fragment>',
-      `#include <map_fragment>
-diffuseColor.a *= texture2D(roleAlphaMask, vMapUv).a;`,
-    )
-  }
-  material.customProgramCacheKey = () => 'production-v3-color-card-v1'
-  return material
 }
 
 function createBoardTypographyTexture(): THREE.CanvasTexture {
@@ -1806,36 +806,27 @@ function createBoardTypographyTexture(): THREE.CanvasTexture {
   context.fillStyle = 'rgba(222, 186, 83, 0.92)'
   context.shadowColor = 'rgba(255, 209, 92, 0.25)'
   context.shadowBlur = 8
-  context.font =
-    '700 48px "Songti SC", "STSong", "Noto Serif CJK SC", serif'
+  context.font = '700 48px "Songti SC", "STSong", "Noto Serif CJK SC", serif'
   context.fillText('楚  河', canvas.width * 0.31, canvas.height * 0.5)
   context.fillText('汉  界', canvas.width * 0.69, canvas.height * 0.5)
 
   context.shadowBlur = 4
   context.fillStyle = 'rgba(221, 193, 112, 0.76)'
-  context.font =
-    '600 19px ui-monospace, "SFMono-Regular", Menlo, monospace'
+  context.font = '600 19px ui-monospace, "SFMono-Regular", Menlo, monospace'
   const horizontalMargin = 94
   const verticalMargin = 76
   for (let file = 0; file <= 8; file += 1) {
     const x =
-      horizontalMargin +
-      (file / 8) * (canvas.width - horizontalMargin * 2)
+      horizontalMargin + (file / 8) * (canvas.width - horizontalMargin * 2)
     context.fillText(String(file + 1), x, verticalMargin * 0.48)
-    context.fillText(
-      String(9 - file),
-      x,
-      canvas.height - verticalMargin * 0.48,
-    )
+    context.fillText(String(9 - file), x, canvas.height - verticalMargin * 0.48)
   }
 
   context.fillStyle = 'rgba(155, 188, 222, 0.55)'
-  context.font =
-    '500 14px ui-monospace, "SFMono-Regular", Menlo, monospace'
+  context.font = '500 14px ui-monospace, "SFMono-Regular", Menlo, monospace'
   for (let rank = 0; rank <= 9; rank += 1) {
     const y =
-      verticalMargin +
-      (rank / 9) * (canvas.height - verticalMargin * 2)
+      verticalMargin + (rank / 9) * (canvas.height - verticalMargin * 2)
     const label = String(10 - rank)
     context.fillText(label, horizontalMargin * 0.38, y)
     context.fillText(label, canvas.width - horizontalMargin * 0.38, y)
@@ -1846,73 +837,6 @@ function createBoardTypographyTexture(): THREE.CanvasTexture {
   texture.colorSpace = THREE.SRGBColorSpace
   texture.needsUpdate = true
   return texture
-}
-
-function createGeometricCharacterPlaceholder(
-  side: Side,
-  visibleHeight: number,
-): THREE.Group {
-  const group = new THREE.Group()
-  group.name = 'role-geometric-placeholder'
-  const height = Math.max(0.62, visibleHeight * 0.82)
-  const width = Math.min(0.52, height * 0.5)
-  const shape = new THREE.Shape()
-  shape.moveTo(-width * 0.22, 0)
-  shape.lineTo(-width * 0.42, height * 0.13)
-  shape.lineTo(-width * 0.5, height * 0.56)
-  shape.lineTo(-width * 0.3, height * 0.82)
-  shape.lineTo(0, height)
-  shape.lineTo(width * 0.3, height * 0.82)
-  shape.lineTo(width * 0.5, height * 0.56)
-  shape.lineTo(width * 0.42, height * 0.13)
-  shape.lineTo(width * 0.22, 0)
-  shape.closePath()
-
-  const geometry = new THREE.ShapeGeometry(shape)
-  const rim = new THREE.Mesh(
-    geometry,
-    new THREE.MeshBasicMaterial({
-      color: SILHOUETTE_COLORS[side].rim,
-      transparent: true,
-      opacity: 0.9,
-      depthWrite: false,
-      toneMapped: false,
-      side: THREE.DoubleSide,
-    }),
-  )
-  rim.name = 'geometric-placeholder-rim'
-  rim.scale.set(1.09, 1.045, 1)
-  rim.renderOrder = 4
-  group.add(rim)
-
-  const body = new THREE.Mesh(
-    geometry.clone(),
-    new THREE.MeshBasicMaterial({
-      color: SILHOUETTE_COLORS[side].body,
-      transparent: true,
-      opacity: 0.96,
-      depthWrite: false,
-      toneMapped: false,
-      side: THREE.DoubleSide,
-    }),
-  )
-  body.name = 'geometric-placeholder-body'
-  body.position.z = 0.009
-  body.scale.set(0.9, 0.94, 1)
-  body.renderOrder = 5
-  group.add(body)
-  return group
-}
-
-function disposeObject(root: THREE.Object3D): void {
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return
-    child.geometry.dispose()
-    const materials = Array.isArray(child.material)
-      ? child.material
-      : [child.material]
-    for (const material of materials) material.dispose()
-  })
 }
 
 function readSafeAreaInsetsCss(container: HTMLElement): SafeAreaInsetsCss {
@@ -1943,26 +867,4 @@ function equalInsets(
     left.bottom === right.bottom &&
     left.left === right.left
   )
-}
-
-function applyPresentationCameraProjection(
-  camera: THREE.PerspectiveCamera,
-  profile: PresentationProfile,
-): void {
-  camera.fov = profile.camera.fov
-  camera.aspect = profile.viewport.aspect
-  const offset = profile.camera.projectionCenterOffsetCss
-  if (offset.x === 0 && offset.y === 0) {
-    camera.clearViewOffset()
-  } else {
-    camera.setViewOffset(
-      profile.viewport.width,
-      profile.viewport.height,
-      -offset.x,
-      -offset.y,
-      profile.viewport.width,
-      profile.viewport.height,
-    )
-  }
-  camera.updateProjectionMatrix()
 }

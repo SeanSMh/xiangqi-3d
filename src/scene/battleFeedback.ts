@@ -31,6 +31,24 @@ export class BattleFeedback {
   private readonly tempScale = new THREE.Vector3()
   private readonly cameraOffset = new THREE.Vector3()
   private cameraShake = 0
+  private particleScale = 1
+  private impactLightEnabled = true
+  private shakeScale = 1
+
+  /** 由画质档下发；只影响表现强度，不影响任何时间线。 */
+  setBudget(budget: {
+    particleScale: number
+    impactLight: boolean
+    shakeScale: number
+  }): void {
+    this.particleScale = THREE.MathUtils.clamp(budget.particleScale, 0, 1)
+    this.impactLightEnabled = budget.impactLight
+    this.shakeScale = THREE.MathUtils.clamp(budget.shakeScale, 0, 1)
+  }
+
+  get activeSparkCount(): number {
+    return Math.max(1, Math.round(SPARK_COUNT * this.particleScale))
+  }
 
   constructor() {
     this.root.name = 'battle-feedback'
@@ -123,7 +141,11 @@ export class BattleFeedback {
           shockProgress * 6 + index,
         ),
       )
-      const size = Math.max(0.001, (0.72 + (index % 3) * 0.16) * fade)
+      // 超出当前预算的火花缩到不可见，而不是重建 InstancedMesh。
+      const size =
+        index < this.activeSparkCount
+          ? Math.max(0.001, (0.72 + (index % 3) * 0.16) * fade)
+          : 0.0001
       this.tempScale.setScalar(size)
       this.tempMatrix.compose(
         this.tempPosition,
@@ -136,14 +158,17 @@ export class BattleFeedback {
 
     const whitePulse = active ? Math.sin(Math.PI * white) : 0
     const orangePulse = orangeActive ? Math.sin(Math.PI * orange) : 0
-    this.impactLight.visible = whitePulse > 0.01 || orangePulse > 0.01
+    this.impactLight.visible =
+      this.impactLightEnabled && (whitePulse > 0.01 || orangePulse > 0.01)
     this.impactLight.position.set(0, 0.72, 0)
     this.impactLight.color.setHex(whitePulse > orangePulse ? 0xdff6ff : 0xffa332)
-    this.impactLight.intensity = whitePulse * 4.2 + orangePulse * 2.8
+    this.impactLight.intensity = this.impactLightEnabled
+      ? whitePulse * 4.2 + orangePulse * 2.8
+      : 0
 
     this.cameraShake =
-      whitePulse * (1 - white) * 0.078 +
-      orangePulse * (1 - orange) * 0.032
+      (whitePulse * (1 - white) * 0.078 + orangePulse * (1 - orange) * 0.032) *
+      this.shakeScale
     this.cameraOffset.set(
       Math.sin(white * 71 + orange * 19) * this.cameraShake,
       Math.cos(white * 43 + orange * 31) * this.cameraShake * 0.42,
@@ -168,7 +193,7 @@ export class BattleFeedback {
 
   getSnapshot(): BattleFeedbackSnapshot {
     return {
-      sparkCount: SPARK_COUNT,
+      sparkCount: this.activeSparkCount,
       sparksActive: this.sparks.visible,
       shockwaveActive: this.shockwave.visible,
       impactLightActive: this.impactLight.visible,

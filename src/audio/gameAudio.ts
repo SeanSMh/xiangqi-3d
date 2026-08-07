@@ -1,4 +1,4 @@
-import type { AnimationPhase } from '../animation/animationDirector'
+import type { AnimationEvent } from '../animation/animationDirector'
 import type { PieceKind } from '../types/xiangqi'
 
 export type GameAudioCue =
@@ -7,11 +7,11 @@ export type GameAudioCue =
   | 'chariot-charge'
   | 'horse-leap'
   | 'cannon-fire'
+  | 'footstep'
   | 'impact'
+  | 'claim'
   | 'check'
   | 'terminal'
-
-export type AudioAnimationPhase = AnimationPhase | 'idle'
 
 export type GameAudioSignal =
   | { type: 'select' }
@@ -22,12 +22,16 @@ export type GameAudioSignal =
       givesCheck: boolean
       terminal: boolean
     }
-  | { type: 'animation-phase'; phase: AudioAnimationPhase }
+  | { type: 'animation-event'; event: AnimationEvent }
+  /** 演出未能启动或被强制结束时补齐待播 cue，等价于收到 `complete`。 */
+  | { type: 'animation-finished' }
   | { type: 'reset' }
 
 export interface GameAudioEventState {
   moveActive: boolean
   impactPending: boolean
+  /** 炮响属于出膛帧，不属于起手帧；蓄能期间先不发声。 */
+  launchPending: boolean
   completionPending: 'check' | 'terminal' | null
 }
 
@@ -50,6 +54,7 @@ export interface GameAudioSnapshot {
 export const INITIAL_GAME_AUDIO_STATE: GameAudioEventState = {
   moveActive: false,
   impactPending: false,
+  launchPending: false,
   completionPending: null,
 }
 
@@ -64,45 +69,63 @@ export function reduceGameAudioSignal(
   switch (signal.type) {
     case 'select':
       return { state, cues: ['select'] }
-    case 'move-start':
+    case 'move-start': {
+      // 炮吃子的起音要等到弹丸出膛；其余棋种在起手时就该有声音。
+      const launchPending = signal.pieceKind === 'cannon' && signal.capture
       return {
         state: {
           moveActive: true,
           impactPending: signal.capture,
+          launchPending,
           completionPending: signal.terminal
             ? 'terminal'
             : signal.givesCheck
               ? 'check'
               : null,
         },
-        cues: [moveCueFor(signal.pieceKind, signal.capture)],
+        cues: launchPending
+          ? []
+          : [moveCueFor(signal.pieceKind, signal.capture)],
       }
-    case 'animation-phase': {
+    }
+    case 'animation-event': {
       if (!state.moveActive) return { state, cues: [] }
-      const cues: GameAudioCue[] = []
-      let impactPending = state.impactPending
-
-      if (impactPending && hasReachedImpact(signal.phase)) {
-        cues.push('impact')
-        impactPending = false
+      switch (signal.event.type) {
+        case 'complete':
+          return finishMove(state)
+        case 'projectile-release':
+          if (!state.launchPending) return { state, cues: [] }
+          return {
+            state: { ...state, launchPending: false },
+            cues: ['cannon-fire'],
+          }
+        case 'footfall':
+          return { state, cues: ['footstep'] }
+        case 'claim':
+          return { state, cues: ['claim'] }
+        case 'impact':
+          if (!state.impactPending) return { state, cues: [] }
+          return { state: { ...state, impactPending: false }, cues: ['impact'] }
+        default:
+          return { state, cues: [] }
       }
-
-      if (signal.phase === 'idle') {
-        if (state.completionPending) cues.push(state.completionPending)
-        return {
-          state: INITIAL_GAME_AUDIO_STATE,
-          cues,
-        }
-      }
-
-      return {
-        state: { ...state, impactPending },
-        cues,
-      }
+    }
+    case 'animation-finished': {
+      if (!state.moveActive) return { state, cues: [] }
+      return finishMove(state)
     }
     case 'reset':
       return { state: INITIAL_GAME_AUDIO_STATE, cues: [] }
   }
+}
+
+/** 收尾：补发未播的出膛与命中音，再播将军或终局，最后清空。 */
+function finishMove(state: GameAudioEventState): GameAudioTransition {
+  const cues: GameAudioCue[] = []
+  if (state.launchPending) cues.push('cannon-fire')
+  if (state.impactPending) cues.push('impact')
+  if (state.completionPending) cues.push(state.completionPending)
+  return { state: INITIAL_GAME_AUDIO_STATE, cues }
 }
 
 export function moveCueFor(
@@ -113,15 +136,6 @@ export function moveCueFor(
   if (pieceKind === 'horse') return 'horse-leap'
   if (pieceKind === 'cannon' && capture) return 'cannon-fire'
   return 'move'
-}
-
-function hasReachedImpact(phase: AudioAnimationPhase): boolean {
-  return (
-    phase === 'impact' ||
-    phase === 'victim-exit' ||
-    phase === 'settle' ||
-    phase === 'idle'
-  )
 }
 
 type AudioContextConstructor = new () => AudioContext
@@ -279,10 +293,21 @@ export class GameAudio {
           this.tone(92, 34, 0, 0.42, 0.24, 'sine')
           this.tone(310, 72, 0.012, 0.19, 0.11, 'sawtooth')
           break
+        case 'footstep':
+          // 一次落步：短促、低频、刻意压得很轻，密集出现也不会盖住走子音。
+          this.noise(0, 0.048, 0.055, 430, 'lowpass')
+          this.tone(96, 58, 0, 0.06, 0.045, 'triangle')
+          break
         case 'impact':
           this.noise(0, 0.24, 0.25, 980, 'lowpass')
           this.tone(132, 46, 0, 0.23, 0.25, 'square')
           this.tone(920, 260, 0.008, 0.12, 0.08, 'sawtooth')
+          break
+        case 'claim':
+          // 占领落点：一声压实的闷响，与命中的锐利爆音区分开。
+          this.noise(0, 0.16, 0.13, 320, 'lowpass')
+          this.tone(112, 64, 0, 0.22, 0.15, 'sine')
+          this.tone(258, 196, 0.03, 0.14, 0.06, 'triangle')
           break
         case 'check':
           this.tone(392, 392, 0, 0.2, 0.1, 'triangle')

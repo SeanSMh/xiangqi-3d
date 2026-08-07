@@ -44,3 +44,13 @@
 ## 禁止
 
 - `archive_*`、`full_set/black_*`、`redesign/black/` 子目录  
+
+## 阶段扩展 P0–P2
+
+完整清单见 [`production/ASSET_PHASES.md`](./production/ASSET_PHASES.md)。
+
+| 阶段 | 内容 | 路径 |
+|------|------|------|
+| P0 | 对战场 16:9/9:16、equirect 天空、棋盘 albedo/normal | `public/assets/backgrounds/` `board/` |
+| P1 | 攻击姿态、黑方三视图 | `production/poses/` `turnarounds/black/`（无 GLB） |
+| P2 | 炮弹/刀光 VFX、将军/绝杀层、图标封面、底座徽章 runtime 分级 | `public/assets/vfx|ui|icons|runtime/` |
