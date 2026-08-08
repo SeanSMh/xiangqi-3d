@@ -21,7 +21,7 @@ export interface ArenaEnvironmentSnapshot {
     ground: string
     stageTop: string
     /** 天穹已改为程序化渐变，不再依赖贴图。 */
-    sky: 'procedural-gradient'
+    sky: 'procedural-gradient-animated'
     goldRim: string
   }
 }
@@ -75,6 +75,10 @@ export class ArenaEnvironment {
   >
   private readonly dustBaseY: Float32Array
   private readonly dustPhase: Float32Array
+  private readonly skyDome: THREE.Mesh<
+    THREE.SphereGeometry,
+    THREE.ShaderMaterial
+  >
   private readonly snapshot: ArenaEnvironmentSnapshot
   private readonly textureLoader = new THREE.TextureLoader()
   private readonly ownedTextures: THREE.Texture[] = []
@@ -95,7 +99,8 @@ export class ArenaEnvironment {
     // 天空穹顶：程序化渐变 + 星空，外加两层远山环。
     // 不再用 equirect 照片——相机只看得到全图的 11.6%，其余全是白载，
     // 而且照片是定分辨率的，用户开 4K 就又糊了。
-    this.root.add(createSkyDome())
+    this.skyDome = createSkyDome()
+    this.root.add(this.skyDome)
     this.root.add(createRidgeRings())
 
     const ground = new THREE.Mesh(
@@ -280,12 +285,15 @@ export class ArenaEnvironment {
       dustParticles: dustCount,
       accentLights: accentPositions.length,
       textured: true,
-      assets: { ...ARENA_TEXTURE_URLS, sky: 'procedural-gradient' },
+      assets: { ...ARENA_TEXTURE_URLS, sky: 'procedural-gradient-animated' },
     }
   }
 
   update(timeMs: number): void {
     const safeTime = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0
+    // 天穹的漂移、闪烁与流星全部由这个时钟驱动，不读墙上时间——
+    // 手动时钟下同样的 advanceTime 必须给出同样的一帧。
+    this.skyDome.material.uniforms.time!.value = safeTime
     for (const prop of this.floatingProps) {
       prop.object.position.y =
         prop.baseY +

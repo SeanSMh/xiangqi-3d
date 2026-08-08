@@ -90,6 +90,10 @@ export function createSkyDome(
       nebulaCool: { value: new THREE.Color(palette.nebulaCool) },
       nebulaWarm: { value: new THREE.Color(palette.nebulaWarm) },
       nebulaIntensity: { value: palette.nebulaIntensity },
+      // 由 ArenaEnvironment.update 用 presentationTimeMs 推进，而不是墙上时钟。
+      // 手动时钟下 advanceTime(n) 必须得到逐字节相同的帧，否则 Playwright
+      // 截图差分这套测量方法就废了。
+      time: { value: 0 },
     },
     vertexShader: /* glsl */ `
 varying vec3 vLocalPosition;
@@ -111,6 +115,7 @@ uniform float glowWidth;
 uniform vec3 nebulaCool;
 uniform vec3 nebulaWarm;
 uniform float nebulaIntensity;
+uniform float time;
 varying vec3 vLocalPosition;
 varying vec2 vSkyUv;
 
@@ -134,6 +139,13 @@ float valueNoise(vec3 x) {
     f.z);
 }
 
+float hash11(float p) {
+  p = fract(p * 0.1031);
+  p *= p + 33.33;
+  p *= p + p;
+  return fract(p);
+}
+
 float fbm(vec3 p) {
   float value = 0.0;
   float amplitude = 0.5;
@@ -148,6 +160,7 @@ float fbm(vec3 p) {
 void main() {
   vec3 dir = normalize(vLocalPosition);
   float h = dir.y * 0.5 + 0.5;
+  float t = time;
 
   // 辉光带把天穹分成上下两段，各自独立插值，
   // 这样带子的位置可以随意挪而不会把整条渐变拉歪。
@@ -175,8 +188,13 @@ void main() {
     // 所以 fbm(dir * f) 在整个可见宽度上只有 2.09·f 个噪声格。
     // 起初填 2.6 → 不到 3 个格横跨全屏，那是渐变不是纹理，实测毫无变化。
     // 6.5 给约 14 个格做团块，15.0 给约 31 个格做丝缕。
-    float bulk = fbm(dir * 6.5);
-    float wisp = fbm(dir * 15.0 + vec3(bulk * 2.2));
+    // 让采样点在三维噪声场里**穿行**而不是平移二维图案：
+    // 平移只会整体滑动，穿行才会让云团自己生灭翻卷。
+    // 两层速率不同，于是近处丝缕比远处团块跑得快，出视差。
+    vec3 bulkFlow = vec3(t * 0.0000042, 0.0, t * 0.0000090);
+    vec3 wispFlow = vec3(t * 0.0000115, t * 0.0000031, t * 0.0000205);
+    float bulk = fbm(dir * 6.5 + bulkFlow);
+    float wisp = fbm(dir * 15.0 + vec3(bulk * 2.2) + wispFlow);
     // 下限压到 0.22：取 0.30 时差分图中部出现一整片硬切到 0 的「平坦沙漠」，
     // 那正是视线中心，反而比没有星云更显得平。
     float density = smoothstep(0.22, 0.72, bulk * 0.62 + wisp * 0.48);
@@ -189,7 +207,54 @@ void main() {
   // 星点。原先阈值把可见带里的星压到只剩 26% 亮度，等于白画；
   // 现在让整条可见缝都到 0.75 以上。
   float starMask = smoothstep(glowCenter - 0.10, glowCenter + 0.02, h);
-  color += texture2D(stars, vSkyUv).rgb * starIntensity * starMask;
+  //
+  // 周日旋转：只偏移星图的 u，**不转穹顶**。转穹顶会把辉光带一起带走，
+  // 而那条带子是按可见缝的角度钉死的，一转就跑出画面。
+  // 速率 8e-8 u/ms ≈ 3.5 小时一整圈：一局五分钟约漂 92px，注意到才发现在动。
+  vec2 starUv = vec2(vSkyUv.x + t * 0.00000008, vSkyUv.y);
+  // 闪烁用高频时空噪声整体调制，而不是逐星记录相位——星点烘在贴图里，
+  // 着色器拿不到单颗身份，但噪声尺度足够细时视觉上就是各闪各的。
+  float twinkle = 0.62 + 0.62 * valueNoise(dir * 52.0 + vec3(t * 0.0000021));
+  color += texture2D(stars, starUv).rgb * starIntensity * starMask * twinkle;
+
+  // 流星。只在可见缝上方一点点出生，斜穿而下没入山脊，
+  // 生命周期与方位都由 idx 派生，所以在手动时钟下完全可复现。
+  if (h > 0.20 && h < 0.42) {
+    // 周期与命中率是按「屏幕上能看到几颗」反推的，不是手感。
+    // 原先 7400ms + 命中率 45%，前 11 个周期只有 3 颗放行，其中 1 颗全程在
+    // 视锥外、1 颗有 2.7s 躲在 SPOILS 面板后——平均 40 秒才有一颗干净可见的。
+    float cycle = t / 5200.0;
+    float idx = floor(cycle);
+    float u = fract(cycle);
+    // 只有约 45% 的周期真的放一颗，避免节拍器般的规律感。
+    if (hash11(idx * 1.37 + 3.1) > 0.18) {
+      float azimuth = atan(dir.z, dir.x);
+      // 相机朝 +z，可见方位角在 PI/2 附近，把出生点偏进这个范围。
+      // ±63° 的散布有近一半落在视锥外，收到 ±40°。
+      float startAz = 1.5708 + (hash11(idx) - 0.5) * 1.4;
+      float startH = 0.308 + hash11(idx + 11.3) * 0.022;
+      float sweep = (hash11(idx + 5.9) - 0.5) * 1.6;
+      float meteorAz = startAz + sweep * u;
+      // 画面中央的纯天空只有约 70px 高（h 0.246–0.297），
+      // 落差 0.105 太短，还没划开就没入圆盘；0.135 能走满两侧较宽的天空。
+      float meteorH = startH - u * 0.135;
+      // 方位角要按圆环归一化，否则 ±PI 接缝处会闪一下。
+      float dAz = atan(sin(azimuth - meteorAz), cos(azimuth - meteorAz));
+      vec2 offset = vec2(dAz * 0.62, (h - meteorH) * 5.4);
+      vec2 heading = normalize(vec2(sweep * 0.62, -0.105 * 5.4));
+      float along = dot(offset, heading);
+      float across = length(offset - heading * along);
+      // 850 的 1/e 半径换到屏幕约 34px，整团 85px 宽，读作光斑不是流星。
+      // 6000 收到约 13px；头小了就把亮度补回来，保持「一点极亮」的观感。
+      float head = exp(-dot(offset, offset) * 6000.0);
+      // 尾巴只长在身后（along < 0），头前面要干净利落。
+      float tail = exp(-across * 130.0) * exp(min(along, 0.0) * 10.0)
+        * (1.0 - step(0.015, along));
+      // 原先 u=0.81 就衰到 0.17，人还在画面里就先熄了。
+      float life = smoothstep(0.0, 0.05, u) * (1.0 - smoothstep(0.66, 1.0, u));
+      color += vec3(0.78, 0.90, 1.0) * (head * 3.4 + tail * 0.9) * life;
+    }
+  }
 
   gl_FragColor = vec4(color, 1.0);
 }`,
