@@ -57,18 +57,72 @@ const GLOW_WIDTH = 0.105
 export const SKY_DOME_RADIUS = 110
 
 /**
- * 远山环。半径与山顶高度由「必须落进那 5.8° 可见缝」反推：
- *   山顶 y ∈ (camY − tan(遮挡角)·(r − camZ),  camY − tan(视锥顶)·(r − camZ))
- * 桌面机位下 r=24 → (−10.7, −6.1)，r=34 → (−17.1, −11.2)。
- * 取中值并让锯齿幅度跨满整条缝，于是从平台边缘望出去是一道深谷里的峰林。
+ * 远山环。半径与山顶高度不是凭手感填的，是把「脊线要落在屏幕第几行」
+ * 二分反解出来的：
+ *   screenY(topY, radius) = 目标行
+ * 桌面机位下解得 r=20→−7.3、28→−11.0、38→−15.4、52→−21.4，
+ * 对应脊线 y=86/62/38/16，最远一层之上仍留 16px 空天。
+ *
+ * 起初只有两层（r=24/34），实测中央脊线只差 15px、糊成一团，
+ * 而脊线之上平均还空着 84px——所以「群山环绕」缺的是层次不是高度。
+ *
+ * jag 同样是反解的：每层「1 世界单位 = 多少屏幕 px」不同（近层 25px、
+ * 远层 13px），想要统一的视觉起伏就得给不同的 jag。
+ * 目标起伏由近及远 ±40/32/24/16 px，越远越平，本身就是空气透视。
+ *
+ * phase 让四层的峰谷错开，否则同一组正弦会让它们叠成一个形状。
  */
 const RIDGE_LAYERS = [
-  // 近层：山顶取在窗口偏上，锯齿幅度让峰尖几乎顶到视锥顶，
-  // 于是「峰林咬进辉光带」而不是一条平灰带。近处更暗，符合逆光剪影。
-  { radius: 24, topY: -8.0, jag: 1.8, depth: 26, top: 0x0c1322, base: 0x04070e },
-  // 远层：略亮一档做空气透视，从近峰的缺口里透出来。
-  { radius: 34, topY: -14.5, jag: 2.5, depth: 30, top: 0x16223a, base: 0x0a1120 },
+  {
+    radius: 20,
+    topY: -7.0,
+    jag: 1.19,
+    phase: 0.0,
+    depth: 24,
+    top: 0x0a1120,
+    base: 0x03060d,
+  },
+  {
+    radius: 28,
+    topY: -11.1,
+    jag: 1.38,
+    phase: 1.9,
+    depth: 28,
+    top: 0x101a2e,
+    base: 0x070c18,
+  },
+  {
+    radius: 38,
+    topY: -16.2,
+    jag: 1.71,
+    phase: 3.7,
+    depth: 32,
+    top: 0x1a2942,
+    base: 0x0e1728,
+  },
+  {
+    radius: 52,
+    topY: -23.1,
+    jag: 2.31,
+    phase: 5.2,
+    depth: 38,
+    top: 0x28405e,
+    base: 0x1a2a42,
+  },
 ] as const
+
+/**
+ * 层间雾带。半径取相邻两层之间，横向透明度用谐波扰动——
+ * 圆柱本身是旋转对称的，不给方位角变化的话转起来看不出任何动静。
+ * 三条带各转各的速率，远的慢，于是层与层之间出视差。
+ */
+const MIST_BANDS = [
+  { radius: 24, y: -12.6, height: 5.2, opacity: 0.5, rate: 0.0000062 },
+  { radius: 33, y: -17.0, height: 6.0, opacity: 0.42, rate: 0.0000046 },
+  { radius: 45, y: -23.2, height: 7.0, opacity: 0.34, rate: 0.0000032 },
+] as const
+
+const MIST_COLOR = 0x86b4dc
 
 export function createSkyDome(
   palette: SkyPalette = DEFAULT_SKY_PALETTE,
@@ -272,17 +326,24 @@ void main() {
 }
 
 /**
- * 远山环：开口圆柱，顶边按三个正弦叠加位移成峰林。
+ * 远山与雾带。山是正弦位移顶边的开口圆柱，雾是层间的半透明圆柱。
  *
- * 首尾用同一个 index 取峰高，保证圆环接缝闭合；两层不同半径与顶点色，
- * 自然出空气透视。
+ * 山脊改为 `depthWrite: true`：雾带是 transparent，three.js 把它放进
+ * 独立的后置队列，renderOrder 排不到山脊前面去，只能靠深度测试挡。
+ * 山本来就是不透明的，写深度也是它该有的行为。
  */
-export function createRidgeRings(): THREE.Group {
-  const group = new THREE.Group()
-  group.name = 'arena-ridges'
+export interface RidgeField {
+  readonly root: THREE.Group
+  update(timeMs: number): void
+}
 
-  for (const layer of RIDGE_LAYERS) {
-    const segments = 96
+export function createRidgeRings(): RidgeField {
+  const root = new THREE.Group()
+  root.name = 'arena-ridges'
+
+  RIDGE_LAYERS.forEach((layer, index) => {
+    // 256 段：最高次谐波 53.3 需要至少 107 段才表示得出来。
+    const segments = 256
     const geometry = new THREE.CylinderGeometry(
       layer.radius,
       layer.radius,
@@ -298,27 +359,35 @@ export function createRidgeRings(): THREE.Group {
     const half = layer.depth / 2
 
     const peaks: number[] = []
-    for (let index = 0; index <= segments; index += 1) {
-      const t = (index / segments) * Math.PI * 2
-      peaks.push(
-        (Math.sin(t * 3.1) * 0.5 +
-          Math.sin(t * 7.7 + 1.2) * 0.32 +
-          Math.sin(t * 13.3 + 2.6) * 0.18) *
-          layer.jag,
-      )
+    for (let step = 0; step <= segments; step += 1) {
+      const t = (step / segments) * Math.PI * 2 + layer.phase
+      // 三条低次谐波给大轮廓，两条高次给碎峰。原来最高只到 13.3 次，
+      // 在可见的 120° 里才 4.4 个起伏、每 290px 一个包——那是丘陵不是山。
+      const rolling =
+        Math.sin(t * 3.1) * 0.44 +
+        Math.sin(t * 7.7 + 1.2) * 0.28 +
+        Math.sin(t * 13.3 + 2.6) * 0.18 +
+        Math.sin(t * 27.1 + 0.7) * 0.11 +
+        Math.sin(t * 53.3 + 4.1) * 0.06
+      // 纯正弦是圆顶圆谷。`1 - |sin|` 的余量给出尖顶圆谷，
+      // 这才是山的特征形状；减去均值以免整体抬高。
+      const ridged =
+        0.34 * (1 - Math.abs(Math.sin(t * 4.7 + 0.9))) -
+        0.17 +
+        (0.2 * (1 - Math.abs(Math.sin(t * 11.9 + 2.3))) - 0.1)
+      peaks.push((rolling + ridged) * layer.jag)
     }
 
-    for (let index = 0; index < position.count; index += 1) {
-      const y = position.getY(index)
-      const isTop = y > 0
-      const angle = Math.atan2(position.getZ(index), position.getX(index))
+    for (let vertex = 0; vertex < position.count; vertex += 1) {
+      const isTop = position.getY(vertex) > 0
+      const angle = Math.atan2(position.getZ(vertex), position.getX(vertex))
       const peakIndex =
         Math.round(((angle + Math.PI) / (Math.PI * 2)) * segments) % segments
-      if (isTop) position.setY(index, half + peaks[peakIndex]!)
+      if (isTop) position.setY(vertex, half + peaks[peakIndex]!)
       const shade = isTop ? topColor : baseColor
-      colors[index * 3] = shade.r
-      colors[index * 3 + 1] = shade.g
-      colors[index * 3 + 2] = shade.b
+      colors[vertex * 3] = shade.r
+      colors[vertex * 3 + 1] = shade.g
+      colors[vertex * 3 + 2] = shade.b
     }
     position.needsUpdate = true
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
@@ -329,18 +398,76 @@ export function createRidgeRings(): THREE.Group {
         vertexColors: true,
         side: THREE.BackSide,
         fog: false,
-        depthWrite: false,
       }),
     )
     mesh.name = `arena-ridge-${layer.radius}`
     // topY 是山顶应处的世界高度；几何体顶边在局部 +half。
     mesh.position.y = layer.topY - half
-    mesh.renderOrder = -9
+    // 由远及近依次绘制，最远的先画。
+    mesh.renderOrder = -90 + (RIDGE_LAYERS.length - 1 - index) * 2
     mesh.frustumCulled = false
-    group.add(mesh)
-  }
+    root.add(mesh)
+  })
 
-  return group
+  const mists = MIST_BANDS.map((band) => {
+    const segments = 96
+    const geometry = new THREE.CylinderGeometry(
+      band.radius,
+      band.radius,
+      band.height,
+      segments,
+      1,
+      true,
+    )
+    const position = geometry.getAttribute('position') as THREE.BufferAttribute
+    // itemSize 4 时 three.js 会启用顶点 alpha。
+    const colors = new Float32Array(position.count * 4)
+    const tint = new THREE.Color(MIST_COLOR)
+    const half = band.height / 2
+
+    for (let vertex = 0; vertex < position.count; vertex += 1) {
+      const y = position.getY(vertex)
+      const angle = Math.atan2(position.getZ(vertex), position.getX(vertex))
+      // 雾在谷底最浓，往上散尽。
+      const vertical = y > 0 ? 0 : 1
+      const swell =
+        0.42 +
+        0.58 *
+          (0.5 +
+            0.32 * Math.sin(angle * 2.3) +
+            0.12 * Math.sin(angle * 5.1 + 2.0))
+      colors[vertex * 4] = tint.r
+      colors[vertex * 4 + 1] = tint.g
+      colors[vertex * 4 + 2] = tint.b
+      colors[vertex * 4 + 3] = vertical * swell * band.opacity
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+
+    const mesh = new THREE.Mesh(
+      geometry,
+      new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        side: THREE.BackSide,
+        transparent: true,
+        depthWrite: false,
+        fog: false,
+      }),
+    )
+    mesh.name = `arena-mist-${band.radius}`
+    mesh.position.y = band.y + half
+    mesh.frustumCulled = false
+    root.add(mesh)
+    return { mesh, rate: band.rate }
+  })
+
+  return {
+    root,
+    update(timeMs: number): void {
+      for (const mist of mists) {
+        mist.mesh.rotation.y = timeMs * mist.rate
+      }
+    },
+  }
 }
 
 /**

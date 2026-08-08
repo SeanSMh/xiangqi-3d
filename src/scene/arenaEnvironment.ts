@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { createRidgeRings, createSkyDome } from './skyDome'
+import { createRidgeRings, createSkyDome, type RidgeField } from './skyDome'
 
 interface FloatingProp {
   object: THREE.Object3D
@@ -75,6 +75,7 @@ export class ArenaEnvironment {
   >
   private readonly dustBaseY: Float32Array
   private readonly dustPhase: Float32Array
+  private readonly ridges: RidgeField
   private readonly skyDome: THREE.Mesh<
     THREE.SphereGeometry,
     THREE.ShaderMaterial
@@ -101,7 +102,8 @@ export class ArenaEnvironment {
     // 而且照片是定分辨率的，用户开 4K 就又糊了。
     this.skyDome = createSkyDome()
     this.root.add(this.skyDome)
-    this.root.add(createRidgeRings())
+    this.ridges = createRidgeRings()
+    this.root.add(this.ridges.root)
 
     const ground = new THREE.Mesh(
       new THREE.CircleGeometry(ARENA_GROUND_RADIUS, 72),
@@ -294,6 +296,7 @@ export class ArenaEnvironment {
     // 天穹的漂移、闪烁与流星全部由这个时钟驱动，不读墙上时间——
     // 手动时钟下同样的 advanceTime 必须给出同样的一帧。
     this.skyDome.material.uniforms.time!.value = safeTime
+    this.ridges.update(safeTime)
     for (const prop of this.floatingProps) {
       prop.object.position.y =
         prop.baseY +
