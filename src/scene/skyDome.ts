@@ -27,6 +27,12 @@ export interface SkyPalette {
   glow: number
   /** 星点整体亮度。 */
   starIntensity: number
+  /** 星云冷色（团块主体）。 */
+  nebulaCool: number
+  /** 星云暖色（丝缕高光）。 */
+  nebulaWarm: number
+  /** 星云整体强度。 */
+  nebulaIntensity: number
 }
 
 export const DEFAULT_SKY_PALETTE: SkyPalette = {
@@ -35,6 +41,9 @@ export const DEFAULT_SKY_PALETTE: SkyPalette = {
   abyss: 0x080e1c,
   glow: 0x9ad8ff,
   starIntensity: 1.05,
+  nebulaCool: 0x1d5f8c,
+  nebulaWarm: 0x6b4a9e,
+  nebulaIntensity: 1.45,
 }
 
 /**
@@ -78,6 +87,9 @@ export function createSkyDome(
       starIntensity: { value: palette.starIntensity },
       glowCenter: { value: GLOW_CENTER },
       glowWidth: { value: GLOW_WIDTH },
+      nebulaCool: { value: new THREE.Color(palette.nebulaCool) },
+      nebulaWarm: { value: new THREE.Color(palette.nebulaWarm) },
+      nebulaIntensity: { value: palette.nebulaIntensity },
     },
     vertexShader: /* glsl */ `
 varying vec3 vLocalPosition;
@@ -96,11 +108,46 @@ uniform sampler2D stars;
 uniform float starIntensity;
 uniform float glowCenter;
 uniform float glowWidth;
+uniform vec3 nebulaCool;
+uniform vec3 nebulaWarm;
+uniform float nebulaIntensity;
 varying vec3 vLocalPosition;
 varying vec2 vSkyUv;
 
+// 在方向向量上采样而不是在 uv 上：equirect uv 两极会挤成一点、接缝处会断，
+// 而方向向量天然连续，星云不会在正后方裂开一条缝。
+float hash13(vec3 p) {
+  p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float valueNoise(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), f.x),
+        mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), f.x), f.y),
+    mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), f.x),
+        mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), f.x), f.y),
+    f.z);
+}
+
+float fbm(vec3 p) {
+  float value = 0.0;
+  float amplitude = 0.5;
+  for (int octave = 0; octave < 4; octave += 1) {
+    value += amplitude * valueNoise(p);
+    p *= 2.03;
+    amplitude *= 0.5;
+  }
+  return value;
+}
+
 void main() {
-  float h = normalize(vLocalPosition).y * 0.5 + 0.5;
+  vec3 dir = normalize(vLocalPosition);
+  float h = dir.y * 0.5 + 0.5;
 
   // 辉光带把天穹分成上下两段，各自独立插值，
   // 这样带子的位置可以随意挪而不会把整条渐变拉歪。
@@ -115,8 +162,33 @@ void main() {
   float band = pow(max(0.0, 1.0 - abs(h - glowCenter) / glowWidth), 1.9);
   color += glow * band * 0.62;
 
-  // 星点只在辉光线以上渐次浮现，读作「雾气之上才见星」。
-  float starMask = smoothstep(glowCenter - 0.05, glowCenter + 0.10, h);
+  // 星云。纯渐变实测「同一行相邻像素亮度差只有 0.44」——没有任何表面细节，
+  // 读作一块纯色。两层 fbm 叠加补上团块与丝缕：低频给大团，高频做域扭曲
+  // （用低频结果去偏移高频采样点）拉出被风吹散的纤维感。
+  //
+  // h < 0.20（水平线下 37°）永远被地面圆盘挡死，直接跳过——
+  // 这块占屏幕大半，不早退的话每帧要白算 64 次 hash。
+  float nebulaMask =
+    smoothstep(0.20, 0.32, h) * (1.0 - smoothstep(0.62, 0.95, h));
+  if (nebulaMask > 0.002) {
+    // 频率不能凭手感填。dir 是单位向量，可见方位角只有约 120°（2.09 rad），
+    // 所以 fbm(dir * f) 在整个可见宽度上只有 2.09·f 个噪声格。
+    // 起初填 2.6 → 不到 3 个格横跨全屏，那是渐变不是纹理，实测毫无变化。
+    // 6.5 给约 14 个格做团块，15.0 给约 31 个格做丝缕。
+    float bulk = fbm(dir * 6.5);
+    float wisp = fbm(dir * 15.0 + vec3(bulk * 2.2));
+    // 下限压到 0.22：取 0.30 时差分图中部出现一整片硬切到 0 的「平坦沙漠」，
+    // 那正是视线中心，反而比没有星云更显得平。
+    float density = smoothstep(0.22, 0.72, bulk * 0.62 + wisp * 0.48);
+    vec3 tint = mix(nebulaCool, nebulaWarm, smoothstep(0.28, 0.72, bulk));
+    // 辉光核心处让路。星云在暗区最好看，而撞死在 255 的恰恰只有最亮那一条：
+    // 系数 0.45 时削顶 3.72%，0.75 压回基线水平，暗区结构一点没少。
+    color += tint * density * nebulaIntensity * nebulaMask * (1.0 - band * 0.75);
+  }
+
+  // 星点。原先阈值把可见带里的星压到只剩 26% 亮度，等于白画；
+  // 现在让整条可见缝都到 0.75 以上。
+  float starMask = smoothstep(glowCenter - 0.10, glowCenter + 0.02, h);
   color += texture2D(stars, vSkyUv).rgb * starIntensity * starMask;
 
   gl_FragColor = vec4(color, 1.0);
