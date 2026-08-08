@@ -1,5 +1,9 @@
 import * as THREE from 'three'
 import { describe, expect, it } from 'vitest'
+import {
+  ARENA_GROUND_RADIUS,
+  ARENA_GROUND_Y_OFFSET,
+} from './arenaEnvironment'
 import { invalidateShadowAwareMaterials } from './lighting'
 import {
   commitPresentationTextureReplacement,
@@ -10,16 +14,36 @@ import {
 } from './presentationProfile'
 
 describe('resolvePresentationProfile', () => {
-  it('保持桌面既有镜头与高质量预算', () => {
+  it('桌面镜头俯角留出远景，且仍是高质量预算', () => {
     const profile = resolvePresentationProfile(1280, 720, 2)
+
+    // 钉住真正的不变量：**视锥顶端必须越过竞技场地面圆盘**，否则背景全被挡住。
+    // 这条约束横跨两个文件（机位在这里、圆盘半径在 arenaEnvironment），
+    // 任何一边单独改都可能悄悄把背景挡死，所以断言写在一起。
+    const { position, target, fov } = profile.camera
+    const pitchDeg =
+      (Math.atan2(position.y - target.y, target.z - position.z) * 180) /
+      Math.PI
+    const topOfFrameDeg = pitchDeg - fov / 2
+    // 相机沿 z 退到 -10，并不在圆盘正上方，所以挡视线的是圆盘**远边**，
+    // 水平距离是 `radius - camZ` 而不是 `radius`。之前漏掉这一项，
+    // 把遮挡角算大了 16°，测试因此放过了「中央仍被挡死」的构图。
+    const discOcclusionDeg =
+      (Math.atan2(
+        position.y + ARENA_GROUND_Y_OFFSET,
+        ARENA_GROUND_RADIUS - position.z,
+      ) *
+        180) /
+      Math.PI
+    // 至少留出 1/9 画面高度的远景（约 100px @720p）。
+    // 这条上限受机位俯角约束：视锥顶端已在水平线下 26.7°，
+    // 再多就得压低相机，而那会把格距从 33.5px 打到 19.4px。
+    expect(discOcclusionDeg - topOfFrameDeg).toBeGreaterThan(fov / 9)
+    // 同时必须仍是清晰可读的 3/4 俯视，不能为了背景把棋盘压平。
+    expect(pitchDeg).toBeGreaterThan(40)
 
     expect(profile).toMatchObject({
       id: 'desktop-desktop-landscape',
-      camera: {
-        fov: 42,
-        position: { x: 0, y: 11, z: -10 },
-        target: { x: 0, y: 0, z: 0 },
-      },
       renderer: {
         pixelRatio: 2,
         shadows: true,

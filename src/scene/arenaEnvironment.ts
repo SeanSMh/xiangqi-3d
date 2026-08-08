@@ -24,6 +24,42 @@ export interface ArenaEnvironmentSnapshot {
   }
 }
 
+/**
+ * 竞技场地面圆盘半径。
+ *
+ * 这个数字**直接决定能看见多少背景**。注意相机不在圆盘正上方，而是沿 z 退到
+ * −10，因此挡住视线的是圆盘**远边**（z = +radius），距相机水平 `radius + 10`：
+ *
+ *     遮挡角 = atan((camY + ARENA_GROUND_Y_OFFSET) / (radius - camZ))
+ *
+ * 桌面机位视锥顶端在水平线下 26.7°，于是：
+ *   radius 22 → 20.3°，整块画面被挡死；
+ *   radius 12 → 28.3°，只剩 1.6°（约 27px），天空仅在左右角落露出来；
+ *   radius 8.6 → 32.5°，约 5.8°（100px），中央也能看到远景。
+ *
+ * 下限由台面决定：棋盘远角需要 6.02、圆台外径 8.25，所以 8.6 是安全下界。
+ * 浮岩铺到 9.35 会略微探出盘外——它们本来就是「悬浮」岩，这样反而合理。
+ */
+export const ARENA_GROUND_RADIUS = 8.6
+/** 圆盘相对棋盘平面的下沉量，遮挡角计算要用。 */
+export const ARENA_GROUND_Y_OFFSET = 0.86
+
+/**
+ * 穹顶贴图的平铺次数与纵向偏移。
+ *
+ * 取 3 是因为可见带只有全图的 11.6%：不压缩的话既糊又只能看到前景暗山。
+ * 偏移让可见带落在源图 v≈0.25–0.59，也就是山脊 + 地平线辉光 + 一点星空。
+ * 横向同样取 3 以保持长宽比——只压纵向会把山压扁。
+ */
+/**
+ * 地面贴图的取样缩放。`< 1` 表示放大（只取中间一块），
+ * 让辉光环从圆台底下挪到盘沿外侧。
+ */
+const GROUND_UV_ZOOM = 0.936
+
+const SKY_TILING = 3
+const SKY_V_OFFSET = -0.5175
+
 /** 与圆台几何匹配的贴图（中心不画假棋盘，留给 3D 棋盘 mesh）。 */
 export const ARENA_TEXTURE_URLS = {
   ground: '/assets/arena/arena_ground_circle.jpg',
@@ -55,9 +91,24 @@ export class ArenaEnvironment {
     this.root.name = 'arena-environment'
 
     const groundMap = this.loadColorMap(ARENA_TEXTURE_URLS.ground)
+    // 贴图自带一圈辉光边，但它画在纹理半径 0.37–0.46 处；`CircleGeometry` 把
+    // 纹理半径 0.5 映到盘沿，于是辉光落在几何半径 6.4–7.9——正好被外径 8.25 的
+    // 圆台盖住，露在外面的只剩辉光外侧的暗色衰减，看起来就是「一圈黑盘」。
+    // 稍微放大取样，把辉光推到盘沿外侧，平台边缘才有亮边而不是死黑。
+    groundMap.repeat.set(GROUND_UV_ZOOM, GROUND_UV_ZOOM)
+    groundMap.offset.set((1 - GROUND_UV_ZOOM) / 2, (1 - GROUND_UV_ZOOM) / 2)
     const stageTopMap = this.loadColorMap(ARENA_TEXTURE_URLS.stageTop)
     const skyMap = this.loadColorMap(ARENA_TEXTURE_URLS.sky)
-    skyMap.mapping = THREE.EquirectangularReflectionMapping
+    // 这张图是当作 `material.map` 贴在球面上的，不是 envMap；
+    // EquirectangularReflectionMapping 只对环境贴图有意义，这里保持默认 UV 映射。
+    // 横向改回 Repeat，否则 u=0/1 的接缝会被 ClampToEdge 拉出一条竖纹。
+    skyMap.wrapS = THREE.RepeatWrapping
+    // 相机只看得到穹顶很窄的一条：桌面机位下 v 仅 0.255–0.370（全图的 11.6%），
+    // 81 个源像素被拉到 308 个屏幕像素，放大 3.8 倍——所以山又大又糊，
+    // 而且落在最前景的暗山上，好看的地平线辉光与星空全在视野外。
+    // 平铺 3 次把整幅全景压进这条可见带：山变小变远、清晰度同时提升约 3 倍。
+    skyMap.repeat.set(SKY_TILING, SKY_TILING)
+    skyMap.offset.set(0, SKY_V_OFFSET)
     const goldRimMap = this.loadColorMap(ARENA_TEXTURE_URLS.goldRim)
 
     // 天空穹顶：圆台外围的高山星辰（equirect，无中心假棋盘）
@@ -68,6 +119,9 @@ export class ArenaEnvironment {
         side: THREE.BackSide,
         depthWrite: false,
         fog: false,
+        // 穹顶与场内一起过 ACES：不这样做它会比棋盘亮一大截，
+        // 山脊糊成一片惨白，反而抢戏。（当初「背景全黑」是圆盘挡的，不是这里。）
+        color: 0xb9c6d6,
       }),
     )
     sky.name = 'arena-sky-dome'
@@ -75,7 +129,7 @@ export class ArenaEnvironment {
     this.root.add(sky)
 
     const ground = new THREE.Mesh(
-      new THREE.CircleGeometry(22, 72),
+      new THREE.CircleGeometry(ARENA_GROUND_RADIUS, 72),
       new THREE.MeshStandardMaterial({
         map: groundMap,
         color: 0xffffff,
@@ -85,7 +139,7 @@ export class ArenaEnvironment {
     )
     ground.name = 'arena-ground'
     ground.rotation.x = -Math.PI / 2
-    ground.position.y = -0.86
+    ground.position.y = -ARENA_GROUND_Y_OFFSET
     ground.receiveShadow = true
     this.root.add(ground)
 

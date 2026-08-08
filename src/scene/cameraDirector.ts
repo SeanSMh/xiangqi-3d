@@ -38,6 +38,20 @@ export interface BoardProjection {
 const ZERO: Vector3Like = { x: 0, y: 0, z: 0 }
 
 /**
+ * 近/远裁剪面。
+ *
+ * 远端必须覆盖 **天空穹顶半径 90 + 相机到原点的距离**：轨道拉远最多 1.65 倍、
+ * 战术俯视机位约 16.6，最坏约 113。原值 100 会把穹顶远端整片裁掉，
+ * 表现为「背景一片黑」。
+ *
+ * 近端同时从 0.1 抬到 1.2：棋盘上叠了排版、标记、河界、台面等多层近共面几何，
+ * 只放大远端会让深度精度变差、引发 z-fighting。相机离最近的棋盘角也有 9 格以上，
+ * 抬近端不会裁到任何东西，反而把深度比从 1000 降到 250。
+ */
+const CAMERA_NEAR = 1.2
+const CAMERA_FAR = 300
+
+/**
  * 相机三层合成器。
  *
  * 1. **用户轨道**：`profile` 给出的基准构图 + 用户 yaw + 安全取景比例。这一层
@@ -87,8 +101,8 @@ export class CameraDirector {
     this.camera = new THREE.PerspectiveCamera(
       profile.camera.fov,
       profile.viewport.aspect,
-      0.1,
-      100,
+      CAMERA_NEAR,
+      CAMERA_FAR,
     )
     applyPresentationCameraProjection(this.camera, profile)
     this.restPosition.copy(profile.camera.position)
@@ -247,6 +261,9 @@ export class CameraDirector {
       yawOffsetDegrees:
         Math.round(((this.yawOffsetRadians * 180) / Math.PI) * 10) / 10,
       framingScale: Math.round(this.framingScale * 10_000) / 10_000,
+      // 裁剪面进快照：背景「看不全」多半是远端裁掉了穹顶，必须能被验收看到。
+      near: this.camera.near,
+      far: this.camera.far,
       dragging: this.dragging,
       tactical: this.tactical,
       position: {

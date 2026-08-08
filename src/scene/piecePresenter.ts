@@ -431,6 +431,8 @@ export class PiecePresenter {
     let fallbackInstances = 0
     let placeholderInstances = 0
     let backViewInstances = 0
+    let attackPoseInstances = 0
+    let attackPoseBackInstances = 0
     for (const mesh of this.meshes.values()) {
       const kind = mesh.userData.pieceKind as PieceKind | undefined
       if (kind) renderedKinds.add(kind)
@@ -445,6 +447,9 @@ export class PiecePresenter {
       if (loadingFallbackVisible || placeholderVisible) fallbackInstances += 1
       if (placeholderVisible) placeholderInstances += 1
       if (card?.userData.viewMode === 'back') backViewInstances += 1
+      const mode = card?.userData.visualMode
+      if (mode === 'production-v3-attack-pose') attackPoseInstances += 1
+      if (mode === 'production-v3-attack-pose-back') attackPoseBackInstances += 1
     }
 
     const capturedTokens = [...this.capturedMeshes.values()]
@@ -466,6 +471,9 @@ export class PiecePresenter {
       fallbackInstances,
       placeholderInstances,
       backViewInstances,
+      // 正/背向出手姿各自真正显示出来的实例数，供验收判定「接上了没有」。
+      attackPoseInstances,
+      attackPoseBackInstances,
       aura: {
         glowEnabled: this.glowEnabled,
         motesPerPiece: this.aura.getMotesPerPiece(),

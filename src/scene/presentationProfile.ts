@@ -116,6 +116,14 @@ export function resolvePresentationTextureStatusAfterFailure(
   return mode === 'initial' ? 'failed' : 'ready'
 }
 
+/**
+ * 桌面主视角。**保持原始构图**——挡住背景的从来不是俯角，是竞技场地面圆盘。
+ *
+ * 曾试过压低俯角来露出远景：确实能把天空占比从 6% 提到 34%，
+ * 但格距同时从 33.3px 掉到 19.4px、远端几排挤成一团，代价太大。
+ * 改为收缩圆盘半径后，同样的机位能拿到 45% 天空且棋盘完全不受影响
+ * （见 `ARENA_GROUND_RADIUS`）。
+ */
 const DESKTOP_CAMERA_POSITION: PresentationVector3 = {
   x: 0,
   y: 11,

@@ -8,8 +8,14 @@ import * as THREE from 'three'
 
 export const LIGHTING = {
   background: 0x0d0d14,
-  fogNear: 12,
-  fogFar: 28,
+  /**
+   * 雾距按**竞技场尺度**设定，不是按棋盘尺度。
+   * 原值 12/28 是背景还只是黑色虚空时定的；接入圆台与穹顶后，
+   * 道具都在 12–20 处，28 的远端会把整个竞技场抹平成纯色。
+   * 天空穹顶材质 `fog: false`，不受此影响。
+   */
+  fogNear: 20,
+  fogFar: 62,
   ambient: { color: 0x6a7a8c, intensity: 0.42 },
   /** 主光：暖白，略偏前上 */
   key: {
