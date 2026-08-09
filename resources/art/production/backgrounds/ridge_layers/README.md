@@ -85,8 +85,13 @@ peak heights vary across the strip: tall clusters and low saddles, not an even w
 ```
 sky, clouds, stars, sun, moon, gradient background, water, lake, river,
 trees, forest, buildings, castle, people, text, watermark, signature,
-vignette, border, frame, foreground rocks, birds
+vignette, border, frame, foreground rocks, birds,
+flat silhouette, solid fill, two-tone, posterized, cutout, vector art,
+flat color, monochrome shape
 ```
+
+后半段是 v2 新增的。v1 就是被「剪影 / 极简内部细节」这类措辞推到了纯两色，
+见第八节。
 
 ### 为什么用洋红底
 
@@ -118,21 +123,34 @@ definition between overlapping ridges, night, dark fantasy,
 <通用约束>
 ```
 
-### 03 中远 `ridge_03_far.png` — 天际线主力之一
+### 03 中远 `ridge_03_far.png` — 天际线主力之一 · **v2 要求内部细节**
+
+> v1 交回的是纯两色图（见第八节）。v2 必须保留山体内部明暗。
 
 ```
-seamless horizontally tileable panorama, distant mountain range, elegant varied
-peak silhouette with deep V-shaped valleys and sharp summits, muted dark blue
-#1a2942, slight softening toward the base, night, dark fantasy,
+seamless horizontally tileable panorama, distant mountain range at night,
+elegant varied peak silhouette with deep V-shaped valleys and sharp summits,
+KEEP INTERNAL FORM: visible rock faces, ridge lines and shadowed gullies,
+lit slopes and shadow slopes clearly distinguishable,
+value range from #0e1728 in the deepest shadows to #28405e on the lit ridges,
+cool desaturated blue, no warm tones, no snow,
 <通用约束>
 ```
 
-### 04 远景 `ridge_04_horizon.png` — 天际线主力
+### 04 远景 `ridge_04_horizon.png` — 天际线主力（占 77%）· **v2 要求内部细节**
+
+> 这一层最亮、也最吃细节，是整个背景观感的决定项。
 
 ```
-seamless horizontally tileable panorama, very distant hazy mountain range on the
-horizon, tall dramatic snow-dusted summits with low soft foothills between them,
-pale slate blue #28405e, low contrast, atmospheric perspective, night,
+seamless horizontally tileable panorama, very distant mountain range on the
+horizon at night, tall dramatic summits with snow on the highest peaks,
+low soft foothills between them,
+KEEP INTERNAL FORM: soft atmospheric modelling, snow fields and bare rock
+clearly separated, thin haze pooling in the valleys,
+value range from #151f30 in shadowed slopes to #3c648c on lit rock,
+small snow highlights up to #5878a0,
+cool desaturated blue, no warm tones,
+lower internal contrast than the nearer layers (atmospheric perspective),
 <通用约束>
 ```
 
@@ -157,13 +175,16 @@ pale slate blue #28405e, low contrast, atmospheric perspective, night,
 
 ---
 
-## 五、风格说明：别在质感上使劲
+## 五、风格说明：01/02 重形，03/04 重质
 
-最亮的一层也只到 `#28405e`。在这个亮度下，**写实照片和手绘板绘几乎看不出区别**——
-细节全被压进剪影里了。让模型优化**山形轮廓**，不要在岩石纹理上花力气。
+**01 和 02**：山体色 `#0a1120` / `#101a2e` 近乎纯黑，这个亮度下写实照片和板绘看不出
+区别，细节全被压进剪影。优化**山形轮廓**即可，纯剪影可接受。
 
-另外竞技场本身是低多边形风格（8 边柱体、十二面体浮岩），过度写实的山反而会打架。
-「写实感但偏剪影」是安全区。
+**03 和 04**：`#1a2942` / `#28405e` 亮到能吃下内部明暗，而它们合计占天际线 100%
+（23% + 77%）。**必须保留岩面、沟壑、明暗与雪顶**，纯剪影会浪费这两层。
+
+竞技场本身是低多边形风格（8 边柱体、十二面体浮岩），所以 03/04 要的是
+「有体积和质感的远山」，不是高频写实岩石特写——后者会和场景打架。
 
 ---
 
@@ -178,6 +199,20 @@ pale slate blue #28405e, low contrast, atmospheric perspective, night,
 - [ ] 图里没有天空、云、星、太阳、水面、树木、建筑、文字水印
 - [ ] 四张是四条不同的山形
 - [ ] 比例 16:1（或第四节的退让比例之一）
+
+### 03 / 04 额外的可量化验收（v1 就是栽在这里）
+
+肉眼容易漏，用数值卡。统计范围：**山体区（非洋红/非透明的像素）**。
+
+| 指标 | 03 目标 | 04 目标 | v1 实测 |
+|---|---|---|---|
+| 唯一颜色数 | > 2000 | > 2000 | **2** ❌ |
+| 亮度 σ | ≥ 9 | ≥ 12 | **0** ❌ |
+| 亮度均值 | 35–48 | 55–70 | 39.6 / 61 ✅ |
+| 亮度 p5 → p95 | ≈ 18 → 62 | ≈ 28 → 95 | 无跨度 ❌ |
+
+亮度按 `L = 0.2126R + 0.7152G + 0.0722B`。均值对了不代表有细节——
+v1 的均值完全正确，但方差为零。
 
 ---
 
@@ -213,3 +248,46 @@ pale slate blue #28405e, low contrast, atmospheric perspective, night,
 `topY` 由「脊线要落在屏幕第几行」二分求解 `screenY(topY, radius)` 得到，
 目标行依次为 78 / 64 / 52 / 38；`jag` 由「想要多少 px 起伏」反解，
 目标依次为 ±30 / 28 / 28 / 30 px。
+
+
+---
+
+## 八、v1 交付结果与 03/04 复刻要求
+
+v1 四张已接入（提交 `66f5454`），几何与接缝均正确，但**每张只有 2 种颜色**
+（目标色 + 洋红），即山脊轮廓的二值遮罩，没有任何内部明暗。
+
+### 细节死在哪一步
+
+`DELIVERY.md` 记录的工艺：
+
+```
+1. Imagine 生成 2:1 山脊全景（洋红天空 + 剪影山形）
+2. 顶部连通洪水填充抠天 → 逐列脊线高度        ← 图在这里被降维成一条曲线
+3. 映射到 18% 峰顶余量 / 实心底边 / 目标色双色重建   ← 用两色重建
+4. 高度图左右 9% 交叉淡化闭合接缝
+```
+
+第 2 步把整张图压成了一维脚线高度，原图的岩面与明暗在此丢失；第 3 步再以两色重建。
+**只改提示词而仍走这条管线，结果还是两色图。**
+
+### 两条路
+
+**A. 只交原图，后处理交给我（推荐）**
+
+产出带内部细节的宽幅山脉图即可，不要做抠天、不要做高度图重建、不要闭接缝。
+我这边做：洋红抠图 → 缩放平移使峰顶落在 18% → 向下补齐实心底边 →
+像素域环绕交叉淡化闭缝。抠图与闭缝我已有现成实现。
+
+**B. 自行处理，但换掉第 3 步**
+
+保留第 1、2、4 步，第 3 步不要用高度图重建。改为：
+用高度图**只**求出峰顶所在行，据此整体缩放平移原图使峰顶落到 18%，
+底部不足处用最底一行像素向下拉伸补实；全程保留原始像素。
+接缝改在像素域做环绕交叉淡化（高度图域的闭合对彩色图无效）。
+
+### 接入侧我会同步调整的
+
+- `baseShade`（03 现为 0.52、04 为 0.66）会调高到接近 1.0。
+  这个顶点色乘子是给平涂剪影补体积感用的，图里自带明暗后再乘会压暗两次。
+- 复核削顶率：v1 接入后从 1.03% 升到 2.19%，04 变亮后需要重新量。
