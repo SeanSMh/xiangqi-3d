@@ -123,36 +123,13 @@ definition between overlapping ridges, night, dark fantasy,
 <通用约束>
 ```
 
-### 03 中远 `ridge_03_far.png` — 天际线主力之一 · **v2 要求内部细节**
+### 03 / 04 的 v2 提示词见第八节
 
-> v1 交回的是纯两色图（见第八节）。v2 必须保留山体内部明暗。
+v1 交回的是纯两色遮罩，且已确认根因在后处理而非提示词。v2 改走**方案 A**：
+外部只出原图，抠图/对位/补底/闭缝全部由接入侧做。因此 v2 提示词不再包含
+18% 余量、实心底边、无缝闭合这些约束——它们已不是作画方的责任。
 
-```
-seamless horizontally tileable panorama, distant mountain range at night,
-elegant varied peak silhouette with deep V-shaped valleys and sharp summits,
-KEEP INTERNAL FORM: visible rock faces, ridge lines and shadowed gullies,
-lit slopes and shadow slopes clearly distinguishable,
-value range from #0e1728 in the deepest shadows to #28405e on the lit ridges,
-cool desaturated blue, no warm tones, no snow,
-<通用约束>
-```
-
-### 04 远景 `ridge_04_horizon.png` — 天际线主力（占 77%）· **v2 要求内部细节**
-
-> 这一层最亮、也最吃细节，是整个背景观感的决定项。
-
-```
-seamless horizontally tileable panorama, very distant mountain range on the
-horizon at night, tall dramatic summits with snow on the highest peaks,
-low soft foothills between them,
-KEEP INTERNAL FORM: soft atmospheric modelling, snow fields and bare rock
-clearly separated, thin haze pooling in the valleys,
-value range from #151f30 in shadowed slopes to #3c648c on lit rock,
-small snow highlights up to #5878a0,
-cool desaturated blue, no warm tones,
-lower internal contrast than the nearer layers (atmospheric perspective),
-<通用约束>
-```
+**完整的 v2 提示词在第八节。**
 
 ---
 
@@ -271,20 +248,93 @@ v1 四张已接入（提交 `66f5454`），几何与接缝均正确，但**每�
 第 2 步把整张图压成了一维脚线高度，原图的岩面与明暗在此丢失；第 3 步再以两色重建。
 **只改提示词而仍走这条管线，结果还是两色图。**
 
-### 两条路
+### 已选方案 A：外部只出原图
 
-**A. 只交原图，后处理交给我（推荐）**
+作画方**不做**抠天、不做高度图重建、不做接缝闭合。以下由接入侧完成：
 
-产出带内部细节的宽幅山脉图即可，不要做抠天、不要做高度图重建、不要闭接缝。
-我这边做：洋红抠图 → 缩放平移使峰顶落在 18% → 向下补齐实心底边 →
-像素域环绕交叉淡化闭缝。抠图与闭缝我已有现成实现。
+1. 洋红抠图 + 去溢色（边缘抗锯齿会带洋红边）
+2. 裁出含山脊的横带，按等比关系反推圆柱高度
+3. 缩放平移使峰顶落到 18%，底部用最底一行像素向下拉伸补实
+4. 像素域环绕交叉淡化闭合接缝
+5. 按宽度决定平铺次数
 
-**B. 自行处理，但换掉第 3 步**
+### 交付要求（方案 A）
 
-保留第 1、2、4 步，第 3 步不要用高度图重建。改为：
-用高度图**只**求出峰顶所在行，据此整体缩放平移原图使峰顶落到 18%，
-底部不足处用最底一行像素向下拉伸补实；全程保留原始像素。
-接缝改在像素域做环绕交叉淡化（高度图域的闭合对彩色图无效）。
+| 项 | 要求 |
+|---|---|
+| 比例 | **3:1 即可**，多余部分我裁。比例不重要，宽度重要 |
+| 宽度 03 | ≥ 1536（平铺 3 次）；≥ 4608 则 1 次、完全不重复 |
+| 宽度 04 | ≥ 2304（平铺 2 次）；≥ 4608 则 1 次、完全不重复 |
+| 背景 | 纯平洋红 `#FF00FF`，或直接给透明底 |
+| 不需要做 | 18% 余量、实心底边、无缝闭合 |
+
+宽度直接决定要平铺几次，也就决定环绕时会不会看出重复。**越宽越好。**
+
+### v2 完整提示词 · 03 中远
+
+```
+A panoramic strip of a distant mountain range at night.
+
+SUBJECT: distant mountain range, varied skyline with deep V-shaped valleys and
+sharp summits, tall clusters alternating with low saddles, not an even wall.
+
+INTERNAL FORM IS REQUIRED: visible rock faces, ridge lines and shadowed gullies,
+lit slopes and shadow slopes clearly distinguishable.
+This must NOT be a flat silhouette.
+
+VALUE RANGE: darkest shadows #0e1728, lit ridges #28405e.
+Cool desaturated blue only, no warm tones. No snow.
+
+BACKGROUND: everything above the mountains is SOLID FLAT MAGENTA #FF00FF,
+completely uniform, no gradient, no glow, no haze bleeding into it.
+The boundary between mountain and magenta must be a crisp edge.
+Haze may appear BETWEEN mountain forms but never in the magenta area.
+
+FRAMING: mountain range occupies the lower 50-70% of the frame, with clear
+magenta above the highest peak. The range may run off the bottom edge.
+
+--ar 3:1
+```
+
+### v2 完整提示词 · 04 远景
+
+```
+A panoramic strip of a very distant mountain range on the horizon at night.
+
+SUBJECT: far horizon range, tall dramatic summits with snow on the highest
+peaks, low soft foothills between them, varied skyline.
+
+INTERNAL FORM IS REQUIRED: soft atmospheric modelling, snow fields and bare rock
+clearly separated, thin haze pooling in the valleys between ridges.
+This must NOT be a flat silhouette. Lower internal contrast than a near range
+(atmospheric perspective), but still clearly modelled.
+
+VALUE RANGE: shadowed slopes #151f30, lit rock #3c648c,
+small snow highlights up to #5878a0.
+Cool desaturated blue only, no warm tones.
+
+BACKGROUND: everything above the mountains is SOLID FLAT MAGENTA #FF00FF,
+completely uniform, no gradient, no glow, no haze bleeding into it.
+The boundary between mountain and magenta must be a crisp edge.
+Haze may appear BETWEEN mountain forms but never in the magenta area.
+
+FRAMING: mountain range occupies the lower 50-70% of the frame, with clear
+magenta above the highest peak. The range may run off the bottom edge.
+
+--ar 3:1
+```
+
+### v2 反向词
+
+```
+sky, clouds, stars, sun, moon, gradient background, water, lake, river,
+trees, forest, buildings, castle, people, text, watermark, signature,
+vignette, border, frame, foreground rocks, birds,
+flat silhouette, solid fill, two-tone, posterized, cutout, vector art,
+flat color, monochrome shape
+```
+
+后半段针对 v1 的失效模式——v1 正是被「剪影 / minimal internal detail」推到纯两色的。
 
 ### 接入侧我会同步调整的
 
