@@ -37,6 +37,15 @@
 | `production/ENGINE_LIGHTING.md` | 参数文档 |
 | `production/occupancy_0.85_guide.png` | 占位示意图 |
 
+## 角色背视（站立态）
+
+| 路径 | 说明 |
+|------|------|
+| `production/back_idle/` | 站立态背视**生成简报**，资源待产出 |
+
+背向一方目前渲染纯色剪影（`role-fallback`）。攻击态已有背视
+（`poses/*_attack_back.jpg`），站立态没有。
+
 ## 背景
 
 | 路径 | 说明 |
