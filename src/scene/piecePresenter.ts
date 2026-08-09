@@ -15,6 +15,8 @@ import { FACTION_COLORS } from './lighting'
 import type { PresentationProfile } from './presentationProfile'
 import {
   CHARACTER_BACK_VISUAL_MODE,
+  getBackIdleLayout,
+  getBackIdleSpec,
   CHARACTER_VISUAL_MODE,
   PIECE_KINDS,
   ROLE_BASE_TOP,
@@ -396,10 +398,21 @@ export class PiecePresenter {
         colorBody.visible =
           !backFacing && visibility.colorBody && !frontAttackReady
       }
-      // 背向：有背向攻击姿则显示攻击层；否则仍用同源轮廓剪影（绝不镜像正脸）。
+      // 背向优先级：背向攻击姿 > 站立态背视本体 > 同源轮廓剪影。
+      // 剪影现在只是加载中的兜底，不再是背向的常态表现。
+      const backBody = card.getObjectByName('role-color-body-back')
+      const backIdleReady =
+        backFacing &&
+        Boolean(backBody) &&
+        !backAttackReady &&
+        this.textures.getStatus(card.userData.backColorUrl as string) ===
+          'ready' &&
+        this.textures.getStatus(card.userData.backMaskUrl as string) ===
+          'ready'
+      if (backBody) backBody.visible = backIdleReady
       if (fallback) {
         fallback.visible = backFacing
-          ? visibility.rim && !backAttackReady
+          ? visibility.rim && !backAttackReady && !backIdleReady
           : visibility.silhouette && !frontAttackReady
       }
       if (rim) rim.visible = visibility.rim
@@ -407,7 +420,9 @@ export class PiecePresenter {
       card.userData.visualMode = backFacing
         ? backAttackReady
           ? 'production-v3-attack-pose-back'
-          : visibility.rim
+          : backIdleReady
+            ? 'production-v3-back-idle'
+            : visibility.rim
             ? CHARACTER_BACK_VISUAL_MODE
             : 'geometric-placeholder'
         : frontAttackReady
@@ -753,6 +768,36 @@ export class PiecePresenter {
     colorBody.renderOrder = 6
     colorBody.visible = false
     card.add(colorBody)
+
+    // 站立态背视。与攻击层不同，这一层**不懒加载**：对背向的一方它就是常态，
+    // 懒加载只会让开局第一帧露出纯色剪影再闪一下。
+    const backSpec = getBackIdleSpec(side, kind)
+    const backLayout = getBackIdleLayout(side, kind)
+    const backGeometry = new THREE.PlaneGeometry(
+      backLayout.planeWidth,
+      backLayout.planeHeight,
+    )
+    backGeometry.translate(
+      backLayout.geometryOffsetX,
+      backLayout.geometryOffsetY,
+      0,
+    )
+    const backBody = new THREE.Mesh(
+      backGeometry,
+      createCharacterCardMaterial(
+        this.textures.get(backSpec.colorAssetUrl),
+        this.textures.get(backSpec.alphaAssetUrl),
+        dissolve,
+        emberColor,
+      ),
+    )
+    backBody.name = 'role-color-body-back'
+    backBody.position.z = 0.013
+    backBody.renderOrder = 6
+    backBody.visible = false
+    card.add(backBody)
+    card.userData.backColorUrl = backSpec.colorAssetUrl
+    card.userData.backMaskUrl = backSpec.alphaAssetUrl
 
     return card
   }

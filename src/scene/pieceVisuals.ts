@@ -261,12 +261,94 @@ export function getAttackPoseSpec(
 }
 
 /** 攻击姿态卡的几何：沿用待机的平面尺寸，锚点换成脚部中心。 */
+/**
+ * 站立态背视的蒙版测量值，格式同攻击态：
+ * `[宽, 高, left, top, right, bottom, footCenterX]`。
+ *
+ * `footCenterX` 单独量而不是取包围盒中心，因为器械会落地：炮管与车轮都杵在
+ * 地上，转到背面后换边，会把包围盒中心拽出一百多像素，而人本身没动。
+ * 取最底 6% 那一带的中心才是真正的落地锚点。
+ */
+const BACK_IDLE_MEASUREMENTS: Record<
+  Side,
+  Record<PieceKind, AttackPoseMeasurement>
+> = {
+  red: {
+    king: [1024, 1024, 253, 42, 708, 948, 520],
+    advisor: [1024, 1024, 323, 64, 726, 959, 524],
+    elephant: [1024, 1024, 132, 101, 953, 925, 493],
+    horse: [912, 1136, 188, 47, 683, 1086, 411.5],
+    chariot: [1024, 1024, 314, 45, 744, 959, 524],
+    cannon: [1024, 1024, 330, 41, 853, 965, 602],
+    pawn: [1024, 1024, 318, 95, 914, 909, 527.5],
+  },
+  black: {
+    king: [1024, 1024, 273, 46, 979, 946, 511],
+    advisor: [1024, 1024, 315, 64, 735, 959, 524],
+    elephant: [1024, 1024, 133, 49, 944, 930, 533],
+    horse: [912, 1136, 172, 43, 682, 1087, 409],
+    chariot: [1024, 1024, 315, 63, 744, 959, 523.5],
+    cannon: [1024, 1024, 329, 40, 853, 965, 601],
+    pawn: [1024, 1024, 236, 125, 952, 907, 544.5],
+  },
+}
+
+const BACK_IDLE_SPECS: Record<Side, Record<PieceKind, AttackPoseSpec>> = {
+  red: buildBackIdleSpecs('red'),
+  black: buildBackIdleSpecs('black'),
+}
+
+function buildBackIdleSpecs(
+  side: Side,
+): Record<PieceKind, AttackPoseSpec> {
+  return Object.fromEntries(
+    PIECE_KINDS.map((kind) => {
+      const [width, height, left, top, right, bottom, footCenterX] =
+        BACK_IDLE_MEASUREMENTS[side][kind]
+      return [
+        kind,
+        {
+          colorAssetUrl: `/assets/characters/${side}_${kind}_back_v3.jpg`,
+          alphaAssetUrl: `/assets/silhouettes/sil_${side}_${kind}_back_alpha.png`,
+          imageWidth: width,
+          imageHeight: height,
+          alphaBounds: { left, top, right, bottom },
+          footCenterX,
+        } satisfies AttackPoseSpec,
+      ]
+    }),
+  ) as Record<PieceKind, AttackPoseSpec>
+}
+
+/** 站立态背视资源规格。形状与攻击态一致，可共用同一套布局换算。 */
+export function getBackIdleSpec(
+  side: Side,
+  kind: PieceKind,
+): AttackPoseSpec {
+  return BACK_IDLE_SPECS[side][kind]
+}
+
+/** 站立态背视的平面布局，与攻击态共用换算：横向按落地中心、纵向按底边留白。 */
+export function getBackIdleLayout(
+  side: Side,
+  kind: PieceKind,
+): SilhouetteLayout {
+  return layoutFromPoseSpec(getBackIdleSpec(side, kind), kind)
+}
+
 export function getAttackPoseLayout(
   side: Side,
   kind: PieceKind,
   view: CharacterViewMode = 'front',
 ): SilhouetteLayout {
-  const spec = getAttackPoseSpec(side, kind, view)
+  return layoutFromPoseSpec(getAttackPoseSpec(side, kind, view), kind)
+}
+
+/** 攻击态与站立背视共用：横向按落地中心对齐，纵向按底边留白对齐。 */
+function layoutFromPoseSpec(
+  spec: AttackPoseSpec,
+  kind: PieceKind,
+): SilhouetteLayout {
   const idle = getSilhouetteLayout(kind)
   const bottomMargin =
     ((spec.imageHeight - 1 - spec.alphaBounds.bottom) / spec.imageHeight) *
