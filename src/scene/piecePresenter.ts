@@ -31,6 +31,20 @@ import {
 import type { TextureLibrary } from './textureLibrary'
 
 /**
+ * 临时开关：两侧一律显示正面图。
+ *
+ * 背向站立态的原画还不存在（简报见
+ * `resources/art/production/back_idle/`），缺图时背向一方渲染的是
+ * `role-fallback`——用蒙版填单色的纯色剪影，形状对但没有画面内容。
+ * 打开这个开关等于「不做背视」：两军都面朝镜头，好看但不再符合空间逻辑
+ * （红军背对自己的对手）。很多 2.5D 棋类就是这么处理的。
+ *
+ * 置 false 即恢复按相机方位翻面。注意这里只截断 PiecePresenter 的翻面，
+ * 不动 `resolveFactionCharacterViewMode`（它还被棋盘文字朝向复用，且有测试钉着）。
+ */
+const FORCE_FRONT_VIEW = true
+
+/**
  * 棋子表现层：底座、全彩角色卡、被俘陈列与广告牌朝向。
  *
  * 它只消费权威局面与 AnimationDirector 推来的姿态，自身不含任何规则判断，
@@ -48,7 +62,7 @@ export class PiecePresenter {
   private glowEnabled = true
   private flatMode = false
   private viewBySide: Record<Side, CharacterViewMode> = {
-    red: 'back',
+    red: FORCE_FRONT_VIEW ? 'front' : 'back',
     black: 'front',
   }
 
@@ -180,7 +194,11 @@ export class PiecePresenter {
       if (!card.getObjectByName('role-attack-body')) {
         card.add(this.createAttackLayer(kind, side, 'front', dissolve))
       }
-      if (!card.getObjectByName('role-attack-body-back')) {
+      // 强制正面时背向层永远不可能可见，别白白拉两张贴图（颜色 + 蒙版）。
+      if (
+        !FORCE_FRONT_VIEW &&
+        !card.getObjectByName('role-attack-body-back')
+      ) {
         card.add(this.createAttackLayer(kind, side, 'back', dissolve))
       }
     }
@@ -319,6 +337,11 @@ export class PiecePresenter {
    * 换独立背面层；侧视临界区沿用上次结果，避免 90° 附近来回闪烁。
    */
   syncFacing(bearing: CameraBearing): void {
+    if (FORCE_FRONT_VIEW) {
+      this.viewBySide.red = 'front'
+      this.viewBySide.black = 'front'
+      return
+    }
     for (const side of ['red', 'black'] as const) {
       this.viewBySide[side] = resolveFactionCharacterViewMode(
         side,
