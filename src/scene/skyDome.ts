@@ -90,21 +90,25 @@ const RIDGE_LAYERS = [
     topY: -7.89,
     baseShade: 0.4,
   },
+  // 03 / 04 用的是 v2 实拍质感图（1475×400 与 2120×450，
+  // 由 scripts/prepare_ridge_texture.mjs 闭缝并裁剪而来），
+  // 不再是 01/02 那种二值剪影，所以 baseShade 接近 1——
+  // 图里自带明暗，再乘一道陡峭的竖直渐变会把山根压黑两次。
   {
     radius: 38,
-    map: '/assets/arena/ridge_03_far_alpha.png',
+    map: '/assets/arena/ridge_03_far.png',
     repeat: 3,
-    height: 13.26,
-    topY: -12.27,
-    baseShade: 0.52,
+    height: 21.58,
+    topY: -12.5,
+    baseShade: 0.78,
   },
   {
     radius: 52,
-    map: '/assets/arena/ridge_04_horizon_alpha.png',
+    map: '/assets/arena/ridge_04_horizon.png',
     repeat: 2,
-    height: 18.15,
-    topY: -17.83,
-    baseShade: 0.66,
+    height: 34.68,
+    topY: -17.24,
+    baseShade: 0.85,
   },
 ] as const
 
