@@ -41,7 +41,8 @@
 
 | 路径 | 说明 |
 |------|------|
-| `production/back_idle/` | 站立态背视**生成简报**，资源待产出 |
+| `production/back_idle/README.md` | 站立态背视**生成简报**（约束与验收） |
+| `production/back_idle/PROMPTS.md` | 14 条逐兵种提示词，资源待产出 |
 
 背向一方目前渲染纯色剪影（`role-fallback`）。攻击态已有背视
 （`poses/*_attack_back.jpg`），站立态没有。
