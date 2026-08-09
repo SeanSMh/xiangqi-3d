@@ -57,57 +57,54 @@ const GLOW_WIDTH = 0.105
 export const SKY_DOME_RADIUS = 110
 
 /**
- * 远山环。半径与山顶高度不是凭手感填的，是把「脊线要落在屏幕第几行」
- * 二分反解出来的：
- *   screenY(topY, radius) = 目标行
- * 桌面机位下解得 r=20→−7.3、28→−11.0、38→−15.4、52→−21.4，
- * 对应脊线 y=86/62/38/16，最远一层之上仍留 16px 空天。
+ * 远山环。轮廓来自 `public/assets/arena/ridge_0*_alpha.png`——
+ * 四张横向无缝的二值遮罩，用作 `alphaMap` 把平顶圆柱切出山形。
  *
- * 起初只有两层（r=24/34），实测中央脊线只差 15px、糊成一团，
- * 而脊线之上平均还空着 84px——所以「群山环绕」缺的是层次不是高度。
+ * 每个数字的来源（改之前先读，它们看着像审美选择，其实是几何反解的）：
  *
- * jag 同样是反解的：每层「1 世界单位 = 多少屏幕 px」不同（近层 25px、
- * 远层 13px），想要统一的视觉起伏就得给不同的 jag。
- * 目标起伏由近及远 ±40/32/24/16 px，越远越平，本身就是空气透视。
+ * - **tileWidth / repeat**：贴图只有 768–2304 宽，靠 `repeat.x` 补到 360°。
+ *   次数取 5/4/3/2 是因为两两互质——单层各自重复，四层叠加后要绕满一整圈
+ *   才复现一次，视野（约 120°）内看不出重复。
+ * - **height**：由等比映射定死，`2πR · 256 / (tileWidth × repeat)`。
+ *   不等比会把山拉扁或抻细。
+ * - **topY**：先二分反解「峰顶要落在屏幕第几行」，再加上贴图里峰顶到图顶的
+ *   18%（实测四张都恰好是第 46 行 / 256）。目标行由近及远 48/38/26/12。
  *
- * phase 让四层的峰谷错开，否则同一组正弦会让它们叠成一个形状。
+ * 实测圆盘遮挡线在所有层都是屏幕第 105 行，而脊线摆幅有 119–132px，
+ * 所以谷底本就会被平台吃掉，只剩峰尖露出——这是预期的，不是 bug。
  */
 const RIDGE_LAYERS = [
   {
     radius: 20,
-    topY: -7.0,
-    jag: 1.19,
-    phase: 0.0,
-    depth: 24,
-    top: 0x0a1120,
-    base: 0x03060d,
+    map: '/assets/arena/ridge_01_near_alpha.png',
+    repeat: 5,
+    height: 8.38,
+    topY: -4.35,
+    baseShade: 0.34,
   },
   {
     radius: 28,
-    topY: -11.1,
-    jag: 1.38,
-    phase: 1.9,
-    depth: 28,
-    top: 0x101a2e,
-    base: 0x070c18,
+    map: '/assets/arena/ridge_02_mid_alpha.png',
+    repeat: 4,
+    height: 11.0,
+    topY: -7.89,
+    baseShade: 0.4,
   },
   {
     radius: 38,
-    topY: -16.2,
-    jag: 1.71,
-    phase: 3.7,
-    depth: 32,
-    top: 0x1a2942,
-    base: 0x0e1728,
+    map: '/assets/arena/ridge_03_far_alpha.png',
+    repeat: 3,
+    height: 13.26,
+    topY: -12.27,
+    baseShade: 0.52,
   },
   {
     radius: 52,
-    topY: -23.1,
-    jag: 2.31,
-    phase: 5.2,
-    depth: 38,
-    top: 0x28405e,
-    base: 0x1a2a42,
+    map: '/assets/arena/ridge_04_horizon_alpha.png',
+    repeat: 2,
+    height: 18.15,
+    topY: -17.83,
+    baseShade: 0.66,
   },
 ] as const
 
@@ -117,9 +114,15 @@ const RIDGE_LAYERS = [
  * 三条带各转各的速率，远的慢，于是层与层之间出视差。
  */
 const MIST_BANDS = [
-  { radius: 24, y: -12.6, height: 5.2, opacity: 0.5, rate: 0.0000062 },
-  { radius: 33, y: -17.0, height: 6.0, opacity: 0.42, rate: 0.0000046 },
-  { radius: 45, y: -23.2, height: 7.0, opacity: 0.34, rate: 0.0000032 },
+  // `y` 是雾带**底边**，顶边 = y + height。
+  //
+  // 顶边必须压在**身后那层山的峰顶之下**。换成贴图山形后我漏了这一步：
+  // 三条雾带的顶边（−7.4 / −11.0 / −16.2）全都高过身后山峰
+  // （−9.87 / −14.65 / −21.09），于是雾不是填在谷里而是直接糊在天上，
+  // 把辉光带洗成一片灰蓝。
+  { radius: 24, y: -15.2, height: 5.0, opacity: 0.5, rate: 0.0000062 },
+  { radius: 33, y: -21.0, height: 6.0, opacity: 0.42, rate: 0.0000046 },
+  { radius: 45, y: -28.5, height: 7.0, opacity: 0.34, rate: 0.0000032 },
 ] as const
 
 const MIST_COLOR = 0x86b4dc
@@ -335,74 +338,73 @@ void main() {
 export interface RidgeField {
   readonly root: THREE.Group
   update(timeMs: number): void
+  dispose(): void
 }
 
+/**
+ * 远山与雾带。
+ *
+ * 遮罩是二值的，所以用 `alphaTest` 硬切而不是 `transparent`：这样山脊留在
+ * 不透明队列里并写深度，层间雾带（transparent）才能被正确遮挡。若改成
+ * transparent，three.js 会把山和雾放进同一个后置队列，renderOrder 排不出
+ * 「近山挡住远雾」的关系。
+ *
+ * 贴图只提供轮廓，颜色仍由顶点色给——空气透视要能单独调，
+ * 不必为了改一档明度重出四张图。
+ */
 export function createRidgeRings(): RidgeField {
   const root = new THREE.Group()
   root.name = 'arena-ridges'
+  const loader = new THREE.TextureLoader()
+  const owned: THREE.Texture[] = []
 
   RIDGE_LAYERS.forEach((layer, index) => {
-    // 256 段：最高次谐波 53.3 需要至少 107 段才表示得出来。
-    const segments = 256
+    const segments = 128
     const geometry = new THREE.CylinderGeometry(
       layer.radius,
       layer.radius,
-      layer.depth,
+      layer.height,
       segments,
       1,
       true,
     )
     const position = geometry.getAttribute('position') as THREE.BufferAttribute
     const colors = new Float32Array(position.count * 3)
-    const topColor = new THREE.Color(layer.top)
-    const baseColor = new THREE.Color(layer.base)
-    const half = layer.depth / 2
-
-    const peaks: number[] = []
-    for (let step = 0; step <= segments; step += 1) {
-      const t = (step / segments) * Math.PI * 2 + layer.phase
-      // 三条低次谐波给大轮廓，两条高次给碎峰。原来最高只到 13.3 次，
-      // 在可见的 120° 里才 4.4 个起伏、每 290px 一个包——那是丘陵不是山。
-      const rolling =
-        Math.sin(t * 3.1) * 0.44 +
-        Math.sin(t * 7.7 + 1.2) * 0.28 +
-        Math.sin(t * 13.3 + 2.6) * 0.18 +
-        Math.sin(t * 27.1 + 0.7) * 0.11 +
-        Math.sin(t * 53.3 + 4.1) * 0.06
-      // 纯正弦是圆顶圆谷。`1 - |sin|` 的余量给出尖顶圆谷，
-      // 这才是山的特征形状；减去均值以免整体抬高。
-      const ridged =
-        0.34 * (1 - Math.abs(Math.sin(t * 4.7 + 0.9))) -
-        0.17 +
-        (0.2 * (1 - Math.abs(Math.sin(t * 11.9 + 2.3))) - 0.1)
-      peaks.push((rolling + ridged) * layer.jag)
-    }
-
     for (let vertex = 0; vertex < position.count; vertex += 1) {
-      const isTop = position.getY(vertex) > 0
-      const angle = Math.atan2(position.getZ(vertex), position.getX(vertex))
-      const peakIndex =
-        Math.round(((angle + Math.PI) / (Math.PI * 2)) * segments) % segments
-      if (isTop) position.setY(vertex, half + peaks[peakIndex]!)
-      const shade = isTop ? topColor : baseColor
-      colors[vertex * 3] = shade.r
-      colors[vertex * 3 + 1] = shade.g
-      colors[vertex * 3 + 2] = shade.b
+      const shade = position.getY(vertex) > 0 ? 1 : layer.baseShade
+      colors[vertex * 3] = shade
+      colors[vertex * 3 + 1] = shade
+      colors[vertex * 3 + 2] = shade
     }
-    position.needsUpdate = true
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+
+    // 必须用 map 而不是 alphaMap。three.js 的 alphaMap **只读绿通道**，
+    // 而遮罩山体是 (10,17,32,255)——绿通道 17/255 = 0.067，
+    // 低于 alphaTest 阈值，整片山会被丢弃（第一次接就是这么全没的）。
+    // map 才读 alpha 通道，而且这四张的 RGB 正好是各层目标色。
+    const map = loader.load(layer.map)
+    map.colorSpace = THREE.SRGBColorSpace
+    map.wrapS = THREE.RepeatWrapping
+    map.wrapT = THREE.ClampToEdgeWrapping
+    map.repeat.set(layer.repeat, 1)
+    map.anisotropy = 8
+    owned.push(map)
 
     const mesh = new THREE.Mesh(
       geometry,
       new THREE.MeshBasicMaterial({
+        map,
+        // 顶点色在这里是**明度乘子**不是颜色：贴图给色相，顶点色把山根压暗，
+        // 让平涂的剪影有一点体积感。空气透视仍可单独调，不必重出图。
         vertexColors: true,
+        alphaTest: 0.5,
         side: THREE.BackSide,
         fog: false,
       }),
     )
     mesh.name = `arena-ridge-${layer.radius}`
-    // topY 是山顶应处的世界高度；几何体顶边在局部 +half。
-    mesh.position.y = layer.topY - half
+    // topY 是柱顶（不是峰顶）应处的世界高度；几何体中心在局部原点。
+    mesh.position.y = layer.topY - layer.height / 2
     // 由远及近依次绘制，最远的先画。
     mesh.renderOrder = -90 + (RIDGE_LAYERS.length - 1 - index) * 2
     mesh.frustumCulled = false
@@ -423,13 +425,11 @@ export function createRidgeRings(): RidgeField {
     // itemSize 4 时 three.js 会启用顶点 alpha。
     const colors = new Float32Array(position.count * 4)
     const tint = new THREE.Color(MIST_COLOR)
-    const half = band.height / 2
 
     for (let vertex = 0; vertex < position.count; vertex += 1) {
-      const y = position.getY(vertex)
       const angle = Math.atan2(position.getZ(vertex), position.getX(vertex))
       // 雾在谷底最浓，往上散尽。
-      const vertical = y > 0 ? 0 : 1
+      const vertical = position.getY(vertex) > 0 ? 0 : 1
       const swell =
         0.42 +
         0.58 *
@@ -454,7 +454,7 @@ export function createRidgeRings(): RidgeField {
       }),
     )
     mesh.name = `arena-mist-${band.radius}`
-    mesh.position.y = band.y + half
+    mesh.position.y = band.y + band.height / 2
     mesh.frustumCulled = false
     root.add(mesh)
     return { mesh, rate: band.rate }
@@ -466,6 +466,9 @@ export function createRidgeRings(): RidgeField {
       for (const mist of mists) {
         mist.mesh.rotation.y = timeMs * mist.rate
       }
+    },
+    dispose(): void {
+      for (const texture of owned) texture.dispose()
     },
   }
 }

@@ -323,6 +323,7 @@ export class ArenaEnvironment {
   }
 
   dispose(): void {
+    this.ridges.dispose()
     for (const texture of this.ownedTextures) texture.dispose()
     this.ownedTextures.length = 0
   }
