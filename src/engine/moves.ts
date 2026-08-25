@@ -7,12 +7,20 @@ import type {
   Piece,
   Side,
 } from '../types/xiangqi'
-import { oppositeSide, pieceAt } from './board'
+import { oppositeSide } from './board'
+import {
+  buildOccupancy,
+  findKing,
+  isSquareAttackedBy,
+  kingsFaceFrom,
+  kingsFaceOn,
+  squareIndex,
+  type Occupancy,
+} from './attacks'
 import {
   advanceRuleState,
   emptyChases,
   evaluateAdjudication,
-  nextPositionOccurrenceCount,
 } from './adjudication'
 
 const ORTHOGONAL_DIRECTIONS = [
@@ -67,13 +75,13 @@ function moveFor(piece: Piece, to: BoardCoord, capturedId?: string): Move {
 
 function addStepMove(
   moves: Move[],
-  pieces: Piece[],
+  occupancy: Occupancy,
   piece: Piece,
   file: number,
   rank: number,
 ): void {
   if (!isInsideBoard(file, rank)) return
-  const target = pieceAt(pieces, file, rank)
+  const target = occupancy[squareIndex(file, rank)]
   if (!target) {
     moves.push(moveFor(piece, { file, rank }))
   } else if (target.side !== piece.side) {
@@ -81,13 +89,13 @@ function addStepMove(
   }
 }
 
-function generateChariotMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateChariotMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of ORTHOGONAL_DIRECTIONS) {
     let file = piece.file + df
     let rank = piece.rank + dr
     while (isInsideBoard(file, rank)) {
-      const target = pieceAt(pieces, file, rank)
+      const target = occupancy[squareIndex(file, rank)]
       if (!target) {
         moves.push(moveFor(piece, { file, rank }))
       } else {
@@ -103,7 +111,7 @@ function generateChariotMoves(pieces: Piece[], piece: Piece): Move[] {
   return moves
 }
 
-function generateCannonMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateCannonMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of ORTHOGONAL_DIRECTIONS) {
     let file = piece.file + df
@@ -111,7 +119,7 @@ function generateCannonMoves(pieces: Piece[], piece: Piece): Move[] {
     let crossedScreen = false
 
     while (isInsideBoard(file, rank)) {
-      const target = pieceAt(pieces, file, rank)
+      const target = occupancy[squareIndex(file, rank)]
       if (!crossedScreen) {
         if (!target) {
           moves.push(moveFor(piece, { file, rank }))
@@ -132,85 +140,93 @@ function generateCannonMoves(pieces: Piece[], piece: Piece): Move[] {
   return moves
 }
 
-function generateHorseMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateHorseMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of HORSE_STEPS) {
     const legFile = piece.file + (Math.abs(df) === 2 ? Math.sign(df) : 0)
     const legRank = piece.rank + (Math.abs(dr) === 2 ? Math.sign(dr) : 0)
-    if (pieceAt(pieces, legFile, legRank)) continue
-    addStepMove(moves, pieces, piece, piece.file + df, piece.rank + dr)
+    if (occupancy[squareIndex(legFile, legRank)]) continue
+    addStepMove(moves, occupancy, piece, piece.file + df, piece.rank + dr)
   }
   return moves
 }
 
-function generateElephantMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateElephantMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of ELEPHANT_STEPS) {
     const file = piece.file + df
     const rank = piece.rank + dr
     if (!isInsideBoard(file, rank)) continue
     if (piece.side === 'red' ? rank > 4 : rank < 5) continue
-    if (pieceAt(pieces, piece.file + df / 2, piece.rank + dr / 2)) continue
-    addStepMove(moves, pieces, piece, file, rank)
+    const eye = squareIndex(piece.file + df / 2, piece.rank + dr / 2)
+    if (occupancy[eye]) continue
+    addStepMove(moves, occupancy, piece, file, rank)
   }
   return moves
 }
 
-function generateAdvisorMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateAdvisorMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of ADVISOR_STEPS) {
     const file = piece.file + df
     const rank = piece.rank + dr
     if (isInsidePalace(piece.side, file, rank)) {
-      addStepMove(moves, pieces, piece, file, rank)
+      addStepMove(moves, occupancy, piece, file, rank)
     }
   }
   return moves
 }
 
-function generateKingMoves(pieces: Piece[], piece: Piece): Move[] {
+function generateKingMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   for (const [df, dr] of ORTHOGONAL_DIRECTIONS) {
     const file = piece.file + df
     const rank = piece.rank + dr
     if (isInsidePalace(piece.side, file, rank)) {
-      addStepMove(moves, pieces, piece, file, rank)
+      addStepMove(moves, occupancy, piece, file, rank)
     }
   }
   return moves
 }
 
-function generatePawnMoves(pieces: Piece[], piece: Piece): Move[] {
+function generatePawnMoves(occupancy: Occupancy, piece: Piece): Move[] {
   const moves: Move[] = []
   const forward = piece.side === 'red' ? 1 : -1
-  addStepMove(moves, pieces, piece, piece.file, piece.rank + forward)
+  addStepMove(moves, occupancy, piece, piece.file, piece.rank + forward)
 
   const crossedRiver = piece.side === 'red' ? piece.rank >= 5 : piece.rank <= 4
   if (crossedRiver) {
-    addStepMove(moves, pieces, piece, piece.file - 1, piece.rank)
-    addStepMove(moves, pieces, piece, piece.file + 1, piece.rank)
+    addStepMove(moves, occupancy, piece, piece.file - 1, piece.rank)
+    addStepMove(moves, occupancy, piece, piece.file + 1, piece.rank)
   }
   return moves
 }
 
 /** 生成棋子的伪合法着，不过滤己方被将军。 */
 export function generatePseudoLegalMoves(pieces: Piece[], piece: Piece): Move[] {
+  return generatePseudoLegalMovesOn(buildOccupancy(pieces), piece)
+}
+
+function generatePseudoLegalMovesOn(
+  occupancy: Occupancy,
+  piece: Piece,
+): Move[] {
   if (piece.captured) return []
   switch (piece.kind) {
     case 'chariot':
-      return generateChariotMoves(pieces, piece)
+      return generateChariotMoves(occupancy, piece)
     case 'cannon':
-      return generateCannonMoves(pieces, piece)
+      return generateCannonMoves(occupancy, piece)
     case 'horse':
-      return generateHorseMoves(pieces, piece)
+      return generateHorseMoves(occupancy, piece)
     case 'elephant':
-      return generateElephantMoves(pieces, piece)
+      return generateElephantMoves(occupancy, piece)
     case 'advisor':
-      return generateAdvisorMoves(pieces, piece)
+      return generateAdvisorMoves(occupancy, piece)
     case 'king':
-      return generateKingMoves(pieces, piece)
+      return generateKingMoves(occupancy, piece)
     case 'pawn':
-      return generatePawnMoves(pieces, piece)
+      return generatePawnMoves(occupancy, piece)
   }
 }
 
@@ -227,36 +243,33 @@ export function simulateMove(pieces: Piece[], move: Move): Piece[] {
 }
 
 export function kingsFace(pieces: Piece[]): boolean {
-  const redKing = pieces.find((piece) => piece.kind === 'king' && piece.side === 'red' && !piece.captured)
-  const blackKing = pieces.find((piece) => piece.kind === 'king' && piece.side === 'black' && !piece.captured)
-  if (!redKing || !blackKing || redKing.file !== blackKing.file) return false
-
-  const minRank = Math.min(redKing.rank, blackKing.rank)
-  const maxRank = Math.max(redKing.rank, blackKing.rank)
-  return !pieces.some(
-    (piece) =>
-      !piece.captured &&
-      piece.kind !== 'king' &&
-      piece.file === redKing.file &&
-      piece.rank > minRank &&
-      piece.rank < maxRank,
-  )
+  return kingsFaceOn(buildOccupancy(pieces), pieces)
 }
 
 export function isInCheck(pieces: Piece[], side: Side): boolean {
-  const king = pieces.find(
-    (piece) => piece.kind === 'king' && piece.side === side && !piece.captured,
-  )
-  if (!king) return true
-  if (kingsFace(pieces)) return true
+  return isInCheckOn(buildOccupancy(pieces), pieces, side)
+}
 
-  return pieces.some(
-    (piece) =>
-      piece.side !== side &&
-      !piece.captured &&
-      generatePseudoLegalMoves(pieces, piece).some(
-        (move) => move.to.file === king.file && move.to.rank === king.rank,
-      ),
+/**
+ * 已有占位表时的将军判定。
+ *
+ * 原本的写法是「生成敌方全部伪合法着，看有没有落在将上」——为了一个是非题
+ * 把整棵着法树摊开，而它恰好是整个规则层调用最频繁的原语（每个候选着都要问
+ * 一次）。改成从将的格子反查攻击后语义完全一致，见 `attacks.ts`。
+ */
+function isInCheckOn(
+  occupancy: Occupancy,
+  pieces: Piece[],
+  side: Side,
+): boolean {
+  const king = findKing(pieces, side)
+  if (!king) return true
+  if (kingsFaceOn(occupancy, pieces)) return true
+  return isSquareAttackedBy(
+    occupancy,
+    king.file,
+    king.rank,
+    oppositeSide(side),
   )
 }
 
@@ -278,13 +291,51 @@ export function generateLegalMoves(state: GameState, piece: Piece): Move[] {
 }
 
 function generateLegalMovesForPiece(pieces: Piece[], piece: Piece): Move[] {
-  return generatePseudoLegalMoves(pieces, piece).filter((move) => {
-    const captured = move.capturedId
-      ? pieces.find((candidate) => candidate.id === move.capturedId)
-      : undefined
-    if (captured?.kind === 'king') return false
-    return !isInCheck(simulateMove(pieces, move), piece.side)
-  })
+  return filterLegalMoves(buildOccupancy(pieces), pieces, piece)
+}
+
+/**
+ * 从伪合法着里筛掉「走完自己被将」的那些。
+ *
+ * 原本每个候选着都要 `simulateMove` 重建 32 个棋子对象、再重新建表判将；
+ * 这里改成在**同一张占位表**上落子—判断—还原。占位表只存引用、不读坐标，
+ * 因此把棋子对象直接挪到目标格即可，不必复制它。
+ *
+ * 王的安全判定需要知道王在哪：走王时用落点，其余情况王不动。
+ */
+function filterLegalMoves(
+  occupancy: Occupancy,
+  pieces: Piece[],
+  piece: Piece,
+): Move[] {
+  const king = findKing(pieces, piece.side)
+  const enemy = oppositeSide(piece.side)
+  const legal: Move[] = []
+
+  for (const move of generatePseudoLegalMovesOn(occupancy, piece)) {
+    const fromIndex = squareIndex(move.from.file, move.from.rank)
+    const toIndex = squareIndex(move.to.file, move.to.rank)
+    const displaced = occupancy[toIndex]
+    // 象棋以将死结束，不允许把「吃将」当成普通合法着提交。
+    if (displaced?.kind === 'king') continue
+
+    occupancy[toIndex] = piece
+    occupancy[fromIndex] = undefined
+
+    const kingFile = piece.kind === 'king' ? move.to.file : king?.file
+    const kingRank = piece.kind === 'king' ? move.to.rank : king?.rank
+    const safe =
+      kingFile !== undefined &&
+      kingRank !== undefined &&
+      !kingsFaceFrom(occupancy, kingFile, kingRank, piece.side) &&
+      !isSquareAttackedBy(occupancy, kingFile, kingRank, enemy)
+
+    occupancy[fromIndex] = piece
+    occupancy[toIndex] = displaced
+
+    if (safe) legal.push(move)
+  }
+  return legal
 }
 
 /** 无视实际轮次，为规则分析生成某方的完整合法着。 */
@@ -292,30 +343,39 @@ export function generateLegalMovesForSide(
   pieces: Piece[],
   side: Side,
 ): Move[] {
-  return pieces.flatMap((piece) =>
-    piece.side === side && !piece.captured
-      ? generateLegalMovesForPiece(pieces, piece)
-      : [],
-  )
+  return legalMovesForSideOn(buildOccupancy(pieces), pieces, side)
+}
+
+/** 整边生成时占位表只建一次，比逐子建表省下 n 次遍历。 */
+function legalMovesForSideOn(
+  occupancy: Occupancy,
+  pieces: Piece[],
+  side: Side,
+): Move[] {
+  const moves: Move[] = []
+  for (const piece of pieces) {
+    if (piece.side !== side || piece.captured) continue
+    for (const move of filterLegalMoves(occupancy, pieces, piece)) {
+      moves.push(move)
+    }
+  }
+  return moves
 }
 
 export function generateAllLegalMoves(state: GameState): Move[] {
   if (state.status !== 'playing') return []
-  return state.pieces.flatMap((piece) =>
-    piece.side === state.sideToMove && !piece.captured
-      ? generateLegalMoves(state, piece)
-      : [],
-  )
+  return generateLegalMovesForSide(state.pieces, state.sideToMove)
 }
 
 /** 终局探测用：找到首个合法着即停止，避免构造完整着法数组。 */
 export function hasAnyLegalMove(state: GameState): boolean {
   if (state.status !== 'playing') return false
+  const occupancy = buildOccupancy(state.pieces)
   return state.pieces.some(
     (piece) =>
       piece.side === state.sideToMove &&
       !piece.captured &&
-      generateLegalMoves(state, piece).length > 0,
+      filterLegalMoves(occupancy, state.pieces, piece).length > 0,
   )
 }
 
@@ -418,24 +478,22 @@ export function applyKnownLegalMove(
     ? candidate
     : evaluateGameState(candidate)
 
-  const occurrenceCount = nextPositionOccurrenceCount(
-    state,
-    pieces,
-    sideToMove,
-  )
   const chaseAnalysis = options.chaseAnalysis ?? 'always'
-  const shouldAnalyzeChases =
-    boardResult.status === 'playing' &&
-    !givesCheck &&
-    (chaseAnalysis === 'always' ||
-      (chaseAnalysis === 'if-repeated' && occurrenceCount >= 2) ||
-      (chaseAnalysis === 'if-third' && occurrenceCount >= 3))
   const ruleState = advanceRuleState(
     state,
     pieces,
     sideToMove,
     record,
-    shouldAnalyzeChases ? analyzeChases(pieces) : emptyChases(),
+    (occurrences) =>
+      // 捉子分析是规则层最贵的一步，只在真的会被用到时才付这笔钱：
+      // 将军局面不判捉，终局也不再进入循环裁决。
+      boardResult.status === 'playing' &&
+      !givesCheck &&
+      (chaseAnalysis === 'always' ||
+        (chaseAnalysis === 'if-repeated' && occurrences >= 2) ||
+        (chaseAnalysis === 'if-third' && occurrences >= 3))
+        ? analyzeChases(pieces)
+        : emptyChases(),
   )
   const withRuleState: GameState = { ...boardResult, ruleState }
   if (withRuleState.status !== 'playing') return withRuleState

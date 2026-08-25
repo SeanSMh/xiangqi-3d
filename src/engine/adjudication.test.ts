@@ -379,7 +379,7 @@ describe('其他程序终局与时间线', () => {
       state.pieces,
       'black',
       checking,
-      emptyChases(),
+      emptyChases,
     )
     expect(afterCheck.naturalLimit).toEqual({
       countedPlies: 42,
@@ -403,7 +403,7 @@ describe('其他程序终局与时间线', () => {
       replyState.pieces,
       'red',
       reply,
-      emptyChases(),
+      emptyChases,
     )
     expect(afterReply.naturalLimit).toEqual({
       countedPlies: 42,
