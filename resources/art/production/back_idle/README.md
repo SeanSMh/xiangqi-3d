@@ -139,4 +139,8 @@ gradient background, text, watermark, border, frame
    `colorAssetUrl: /assets/characters/${side}_${kind}_v3.jpg`）
 4. `piecePresenter.ts` 的 back 分支改为优先用背视本体，剪影降为加载中的兜底
 5. 校验包围盒对齐：绕相机过切换点截图，比对棋子屏幕位置是否连续
-6. 回归 218 项测试与手动时钟截图确定性
+6. **重跑 `scripts/generate_runtime_character_assets.sh`**，补出 512／768 衍生档。
+   `/assets/characters/*.jpg` 与 `/assets/silhouettes/sil_*_alpha.png` 都会被
+   `resolvePresentationTextureUrl` 映射到 `/assets/runtime/{512,768}/`；漏了这步，
+   桌面正常但手机／平板一律 404、静默退回纯色剪影
+7. 回归测试与手动时钟截图确定性

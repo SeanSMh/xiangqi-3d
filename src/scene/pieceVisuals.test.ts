@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import {
+  resolvePresentationTextureUrl,
+  type CharacterAssetTier,
+} from './presentationProfile'
+import {
   CHARACTER_BACK_VISUAL_MODE,
   CHARACTER_SPECS,
   CHARACTER_VIEW_HYSTERESIS,
   CHARACTER_VISUAL_MODE,
   getAttackPoseLayout,
   getAttackPoseSpec,
+  getBackIdleLayout,
+  getBackIdleSpec,
   getCharacterVisualSpec,
   getSilhouetteLayout,
   MAX_ROLE_FOOTPRINT,
@@ -228,6 +234,96 @@ describe('背向攻击姿态规格', () => {
         expect(layout.planeWidth).toBe(idle.planeWidth)
         expect(layout.planeHeight).toBe(idle.planeHeight)
         expect(layout.geometryOffsetY).toBeGreaterThan(0)
+      }
+    }
+  })
+})
+
+describe('站立态背视规格', () => {
+  it('红黑 14 种背视 URL 与蒙版命名约定一致', () => {
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        const spec = getBackIdleSpec(side, kind)
+        expect(spec.colorAssetUrl).toBe(
+          `/assets/characters/${side}_${kind}_back_v3.jpg`,
+        )
+        expect(spec.alphaAssetUrl).toBe(
+          `/assets/silhouettes/sil_${side}_${kind}_back_alpha.png`,
+        )
+        expect(spec.footCenterX).toBeGreaterThan(0)
+        expect(spec.footCenterX).toBeLessThan(spec.imageWidth)
+      }
+    }
+  })
+
+  it('背视沿用待机平面尺寸，转身时人物不会缩放跳变', () => {
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        const layout = getBackIdleLayout(side, kind)
+        const idle = getSilhouetteLayout(kind)
+        expect(layout.planeWidth).toBe(idle.planeWidth)
+        expect(layout.planeHeight).toBe(idle.planeHeight)
+        expect(layout.geometryOffsetY).toBeGreaterThan(0)
+      }
+    }
+  })
+})
+
+/**
+ * 表现层请求的每一个 URL 都必须能落到真实文件上——**包括移动端衍生档**。
+ *
+ * 这条断言跨了三个文件（URL 在 pieceVisuals、换档在 presentationProfile、
+ * 文件在 public/），单独看哪一个都发现不了问题：背视资源接入后，
+ * `resolvePresentationTextureUrl` 会把它们一并映射到 `/assets/runtime/{512,768}/`，
+ * 而生成脚本当时只产正面档，于是手机/平板上背视一律 404、悄悄退回纯色剪影，
+ * 桌面却完全正常。
+ */
+describe('运行时资源可解析性', () => {
+  const ASSET_TIERS: readonly CharacterAssetTier[] = ['source', '768', '512']
+  // 只取 glob 的**键**：非 eager 形态不会真的去读这几百个文件，
+  // 而键是构建期展开的真实路径清单，正好当作「public 下有什么」的白名单。
+  const publicAssets = new Set(
+    Object.keys(import.meta.glob('/public/assets/**/*.{jpg,png}')),
+  )
+
+  const requestedUrls = (): string[] => {
+    const urls = new Set<string>()
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        const character = getCharacterVisualSpec(side, kind)
+        urls.add(character.colorAssetUrl)
+        urls.add(character.alphaAssetUrl)
+        urls.add(character.fallbackAssetUrl)
+        const back = getBackIdleSpec(side, kind)
+        urls.add(back.colorAssetUrl)
+        urls.add(back.alphaAssetUrl)
+        for (const view of ['front', 'back'] as const) {
+          const attack = getAttackPoseSpec(side, kind, view)
+          urls.add(attack.colorAssetUrl)
+          urls.add(attack.alphaAssetUrl)
+        }
+      }
+    }
+    return [...urls].sort()
+  }
+
+  it.each(ASSET_TIERS)('%s 档的全部角色资源都存在', (tier) => {
+    const missing = requestedUrls()
+      .map((url) => resolvePresentationTextureUrl(url, tier))
+      .filter((url) => !publicAssets.has(`/public${url}`))
+
+    expect(missing).toEqual([])
+  })
+
+  it('攻击姿刻意不进衍生档，始终按源尺寸懒加载', () => {
+    for (const side of ['red', 'black'] as const) {
+      for (const kind of PIECE_KINDS) {
+        for (const view of ['front', 'back'] as const) {
+          const attack = getAttackPoseSpec(side, kind, view)
+          for (const url of [attack.colorAssetUrl, attack.alphaAssetUrl]) {
+            expect(resolvePresentationTextureUrl(url, '512')).toBe(url)
+          }
+        }
       }
     }
   })

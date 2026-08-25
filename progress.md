@@ -596,3 +596,54 @@ t(s)  tier      fps   降档次数  glow   motes
 新增 `quality.upgrades` / `quality.recoveryStreak` 遥测字段。
 `npm test` 218（AI 搜索测试在 load average > 40 时会因 CPU 争用超时，
 单独跑 8/8 全过，非回归）。
+
+## 2026-08-25 第十八阶段：修复背视资源在移动端全部 404
+
+### 症状
+
+桌面一切正常，手机／平板上背向一方仍是**纯色剪影**——正是第十七阶段之后
+`3340466` 那个提交要消灭的东西。桌面看不出来，所以一直没被发现。
+
+### 根因：接入了资源，但没接入它的衍生档
+
+`resolvePresentationTextureUrl` 把两类 URL 映射到移动端衍生档：
+
+```
+/assets/characters/*.jpg
+/assets/silhouettes/sil_*_alpha.png
+```
+
+新加的背视资源命名恰好**两条都命中**（`red_king_back_v3.jpg`、
+`sil_red_king_back_alpha.png`），于是 tablet／phone 去请求
+`/assets/runtime/{512,768}/...`——而生成脚本当时只产 14 正面彩图 + 7 共用蒙版，
+背视一张都没有。结果：`failed` → `backIdleReady=false` → 退回 `role-fallback`。
+
+不是「忘了跑脚本」，是**脚本本身覆盖不到**：它硬校验 `-ne 14 || -ne 7`，
+就算把背视塞进来也会直接 `exit 1`。
+
+### 三处修复
+
+1. **生成脚本扩到 28 彩图 + 21 蒙版**。背视的缩放源必须取 `public/assets/`
+   而不是 `resources/art/production/back_idle/`——后者是**洋红底交付原画**，
+   抠图产物只落在 `public/` 下，从 resources 缩放会把洋红烤进移动端贴图。
+   正面蒙版红黑共用一张、背视蒙版逐阵营各一张，因此配对校验要分开写。
+2. **补 `pieceVisuals.test.ts` 的「运行时资源可解析性」**：把表现层可能请求的
+   全部 URL × 三档（`source/768/512`）逐个对照 `public/` 下的真实文件。
+   这条断言跨了三个文件（URL 在 pieceVisuals、换档在 presentationProfile、
+   文件在 public/），单看任何一个都发现不了问题。
+   用 `import.meta.glob` 的**键**当白名单，非 eager，不读文件也不需要 `@types/node`。
+3. **文档补上「新增贴图必须重跑脚本」**（`resources/README.md`、
+   `back_idle/README.md` 的接入清单原本缺这一步）。
+
+### 验收
+
+- `npm test` 224 全过（新增 6 条）；`typecheck` / `build` 通过。
+- 负向验证：任意删掉一张衍生档，对应档位的用例立刻失败并列出缺失 URL。
+- 衍生档体积：512 档 2.6M、768 档 5.5M（原来分别是 1.6M / 3.4M）。
+
+### 教训
+
+**「桌面能看到效果」不等于接入完成。** 只要资源命名落进衍生档正则，
+就必须同步产出全部档位，否则失败模式是静默降级而不是报错——
+恰恰是最难被发现的那一种。
+

@@ -42,6 +42,7 @@ open /Users/bril/projects/xiangqi-3d/resources/reference/index.html
 | `art/production/redesign/*_v3.jpg` | 红黑七棋种共 14 张当前全彩定稿，是运行时角色颜色图的唯一来源 |
 | `art/production/silhouettes/sil_*_alpha.png` | 从定稿角色转出的七棋种同源 Alpha 与剪影回退 |
 | `art/production/silhouettes/pair_character_silhouette_v3.png` | 全彩角色与剪影成对校对图 |
+| `art/production/back_idle/*_back_v3.jpg` | 站立态背视**交付原画（洋红底）**；不是运行时资源，须先抠图 |
 | `art/production/**/archive_*` | 历史错位或失败资源，只供追溯，禁止进入运行时 |
 
 运行时源尺寸副本位于 `public/assets/characters/` 与 `public/assets/silhouettes/`；移动端衍生档位于 `public/assets/runtime/{512,768}/`。代码只从 `public/assets/` 加载，并按设备档位成对选择颜色图与 Alpha。
@@ -52,7 +53,23 @@ open /Users/bril/projects/xiangqi-3d/resources/reference/index.html
 ./scripts/generate_runtime_character_assets.sh
 ```
 
-脚本只读取 `redesign/{red,black}_*_v3.jpg` 与 `silhouettes/sil_*_alpha.png`，不会读取任何 `archive_*`，也不会改动同档位下独立生成的 `bases/`、`badges/` 等目录。颜色图与 Alpha 使用相同的等比缩放；其中马保持非方形画布，必须继续核对两层输出尺寸一致。
+脚本每档产出 **28 张彩图 + 21 张蒙版**，来源分两类：
+
+| 类别 | 彩图来源 | 蒙版来源 |
+|------|----------|----------|
+| 正面（14 + 7） | `redesign/{red,black}_*_v3.jpg` | `silhouettes/sil_*_alpha.png`（红黑共用） |
+| 站立态背视（14 + 14） | `public/assets/characters/*_back_v3.jpg` | `public/assets/silhouettes/sil_*_back_alpha.png`（逐阵营） |
+
+背视之所以从 `public/` 而不是 `resources/` 取：`back_idle/` 里是**洋红底交付原画**，
+抠图与蒙版由 `scripts/prepare_back_view.mjs` 离线完成，产物只落在 `public/assets/` 下。
+从 `resources/` 缩放会把洋红背景一起烤进移动端贴图。
+
+脚本不会读取任何 `archive_*`，也不会改动同档位下独立生成的 `bases/`、`badges/` 等目录。
+颜色图与 Alpha 使用相同的等比缩放；其中马保持非方形画布，必须继续核对两层输出尺寸一致。
+
+**新增任何角色贴图后都要重跑本脚本**，否则手机／平板会去请求不存在的衍生档、
+静默退回纯色剪影，而桌面（`source` 档）完全正常，肉眼极难发现。
+`src/scene/pieceVisuals.test.ts` 的「运行时资源可解析性」逐档兜住这条。
 
 ## 后续可扩展
 
