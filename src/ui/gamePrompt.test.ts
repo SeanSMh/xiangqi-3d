@@ -103,6 +103,67 @@ describe('deriveGamePrompt', () => {
     },
   )
 
+  it('长杀违规给出自己的文案，不混进长将', () => {
+    const prompt = deriveGamePrompt(
+      makeContext({
+        state: stateWith({
+          status: 'adjudicated',
+          winner: 'black',
+          outcome: {
+            reason: 'perpetual-mate',
+            winner: 'black',
+            offender: 'red',
+            cycle: {
+              startPly: 0,
+              endPly: 8,
+              periodPlies: 4,
+              red: 'long-mate',
+              black: 'allowed',
+              actions: {
+                red: ['mate', 'mate', 'mate', 'mate'],
+                black: ['idle', 'idle', 'idle', 'idle'],
+              },
+            },
+          },
+        }),
+      }),
+    )
+    expect(prompt).toMatchObject({
+      code: 'result-perpetual-mate',
+      title: '黑方胜 · 长杀违规',
+    })
+  })
+
+  it('手段混合时按实际着法命名，不谎称长将', () => {
+    // 一将一捉的等级与长将同档，但玩家对着棋谱是找不到「连续将军」的。
+    const prompt = deriveGamePrompt(
+      makeContext({
+        state: stateWith({
+          status: 'adjudicated',
+          winner: 'black',
+          outcome: {
+            reason: 'perpetual-check',
+            winner: 'black',
+            offender: 'red',
+            cycle: {
+              startPly: 0,
+              endPly: 8,
+              periodPlies: 4,
+              red: 'long-check',
+              black: 'allowed',
+              actions: {
+                red: ['check', 'chase', 'check', 'chase'],
+                black: ['idle', 'idle', 'idle', 'idle'],
+              },
+            },
+          },
+        }),
+      }),
+    )
+    expect(prompt.title).toBe('黑方胜 · 一将一捉违规')
+    expect(prompt.detail).toBe('红方连续一将一捉未变着，判负')
+  })
+
   it('循环和棋会区分双方允许循环与同级违规', () => {
     const allowed = deriveGamePrompt(
       makeContext({
@@ -119,6 +180,7 @@ describe('deriveGamePrompt', () => {
               periodPlies: 4,
               red: 'allowed',
               black: 'allowed',
+              actions: { red: ['idle'], black: ['idle'] },
             },
           },
         }),
@@ -141,6 +203,7 @@ describe('deriveGamePrompt', () => {
               periodPlies: 4,
               red: 'long-chase',
               black: 'long-chase',
+              actions: { red: ['chase'], black: ['chase'] },
             },
           },
         }),

@@ -1,6 +1,9 @@
 import type {
   ChaseThreat,
+  CycleAction,
+  CycleAdjudication,
   CycleBehavior,
+  GameEndReason,
   GameOutcome,
   GameState,
   MoveRecord,
@@ -16,6 +19,17 @@ const SIDES: readonly Side[] = ['red', 'black']
 
 export function emptyChases(): Record<Side, ChaseThreat[]> {
   return { red: [], black: [] }
+}
+
+/** 一帧里与棋例相关的全部威胁信息。 */
+export interface FrameThreats {
+  chases: Record<Side, ChaseThreat[]>
+  /** 走出这一着的一方是否在做杀。 */
+  moverThreatensMate: boolean
+}
+
+export function emptyThreats(): FrameThreats {
+  return { chases: emptyChases(), moverThreatensMate: false }
 }
 
 /** 局面签名里每个棋种占一个字母，红方大写、黑方小写。 */
@@ -64,6 +78,7 @@ export function createRuleState(
         ply,
         positionKey: positionKey(pieces, sideToMove),
         chases: cloneChases(chases),
+        moverThreatensMate: false,
       },
     ],
     currentPositionOccurrences: 1,
@@ -74,7 +89,7 @@ export function createRuleState(
 /**
  * 推进规则状态。
  *
- * 捉子分析走**回调**而不是直接收一份现成结果：是否值得付出这笔分析成本，
+ * 威胁分析（捉与杀）走**回调**而不是直接收一份现成结果：是否值得付出这笔成本，
  * 取决于新局面是第几次出现，而这个次数只有推进到一半才算得出来。
  * 回调把「算次数」和「按次数决定要不要分析」合到一次遍历里，
  * 避免调用方为了做决定再独立算一遍局面签名和出现次数。
@@ -87,7 +102,7 @@ export function advanceRuleState(
   nextPieces: Piece[],
   nextSideToMove: Side,
   record: MoveRecord,
-  resolveChases: (occurrences: number) => Record<Side, ChaseThreat[]>,
+  resolveThreats: (occurrences: number) => FrameThreats,
 ): RuleState {
   const previous = readRuleState(state)
   const key = positionKey(nextPieces, nextSideToMove)
@@ -96,10 +111,12 @@ export function advanceRuleState(
     if (candidate.positionKey === key) occurrences += 1
   }
 
+  const threats = resolveThreats(occurrences)
   const frame: RuleFrame = {
     ply: state.history.length + 1,
     positionKey: key,
-    chases: cloneChases(resolveChases(occurrences)),
+    chases: cloneChases(threats.chases),
+    moverThreatensMate: threats.moverThreatensMate,
   }
 
   if (record.capturedId) {
@@ -138,25 +155,30 @@ export function evaluateAdjudication(state: GameState): GameOutcome | null {
         cycle,
         'black',
       )
-      const redSeverity = cycleSeverity(red)
-      const blackSeverity = cycleSeverity(black)
+      const adjudication: CycleAdjudication = {
+        ...cycle,
+        red: red.behavior,
+        black: black.behavior,
+        actions: { red: red.actions, black: black.actions },
+      }
+      const redSeverity = cycleSeverity(red.behavior)
+      const blackSeverity = cycleSeverity(black.behavior)
       if (redSeverity === blackSeverity) {
         return {
           reason: 'repetition-draw',
           winner: null,
           offender: null,
-          cycle: { ...cycle, red, black },
+          cycle: adjudication,
         }
       }
 
       const offender: Side = redSeverity > blackSeverity ? 'red' : 'black'
-      const behavior = offender === 'red' ? red : black
+      const behavior = offender === 'red' ? red.behavior : black.behavior
       return {
-        reason:
-          behavior === 'long-check' ? 'perpetual-check' : 'perpetual-chase',
+        reason: violationReason(behavior),
         winner: offender === 'red' ? 'black' : 'red',
         offender,
-        cycle: { ...cycle, red, black },
+        cycle: adjudication,
       }
     }
   }
@@ -178,6 +200,21 @@ export function evaluateAdjudication(state: GameState): GameOutcome | null {
   }
 
   return null
+}
+
+/** 判负时给出与最重威胁对应的终局原因。 */
+function violationReason(behavior: CycleBehavior): GameEndReason {
+  switch (behavior) {
+    case 'long-check':
+      return 'perpetual-check'
+    case 'long-mate':
+      return 'perpetual-mate'
+    case 'long-chase':
+      return 'perpetual-chase'
+    case 'allowed':
+      // 等级更高的一方不可能是 allowed（allowed 为最低级 0）。
+      return 'repetition-draw'
+  }
 }
 
 export function hasBareDefenders(pieces: Piece[]): boolean {
@@ -266,25 +303,86 @@ function findCurrentCycle(ruleState: RuleState): {
   }
 }
 
+export interface CycleSideVerdict {
+  behavior: CycleBehavior
+  /** 该方在循环区间内自己每一着的定性，按出现顺序。 */
+  actions: CycleAction[]
+}
+
+/**
+ * 给某方在循环区间内的每一着定性，再据此得出整体结论。
+ *
+ * 棋例的核心是「着着有威胁才算禁止」，而不是「手段必须始终如一」：
+ * 一将一捉、一杀一捉同样禁止，一将一闲、一捉一闲则允许。
+ * 因此先逐着分出 将／杀／捉／闲，再看有没有闲着。
+ *
+ * 定性优先级 将 > 杀 > 捉：将军已是最重威胁，不必再问它是否兼做杀或捉。
+ */
 function classifyCycleSide(
   history: MoveRecord[],
   frames: RuleFrame[],
   cycle: { startPly: number; endPly: number },
   side: Side,
-): CycleBehavior {
-  const moves = history.slice(cycle.startPly, cycle.endPly)
-  const ownMoves = moves.filter((record) => record.side === side)
-  if (ownMoves.length === 0) return 'allowed'
-  if (ownMoves.every((record) => record.givesCheck)) return 'long-check'
-
-  // 程序棋规中，只要循环序列存在任何将军，双方均不再判“捉”。
-  if (moves.some((record) => record.givesCheck)) return 'allowed'
-
+): CycleSideVerdict {
   const frameByPly = new Map(frames.map((frame) => [frame.ply, frame]))
-  let commonTargets: Set<string> | null = null
+  const ownPlies: number[] = []
   for (let ply = cycle.startPly + 1; ply <= cycle.endPly; ply += 1) {
     const record = history[ply - 1]
-    if (!record || record.side !== side) continue
+    if (record && record.side === side) ownPlies.push(ply)
+  }
+  if (ownPlies.length === 0) return { behavior: 'allowed', actions: [] }
+
+  // 先定将与杀；剩下的才需要问「是不是在捉」。
+  const actions = new Map<number, CycleAction>()
+  const undecided: number[] = []
+  for (const ply of ownPlies) {
+    if (history[ply - 1]!.givesCheck) {
+      actions.set(ply, 'check')
+    } else if (frameByPly.get(ply)?.moverThreatensMate) {
+      actions.set(ply, 'mate')
+    } else if (history[ply - 2]?.givesCheck) {
+      // 应将：上一着是对方将军，这一着是被迫的，棋例不因它顺带攻到某子就判捉。
+      // 象棋严格轮流，因此 ply-2 必是对方的着。
+      actions.set(ply, 'idle')
+    } else {
+      undecided.push(ply)
+    }
+  }
+
+  // 长捉要求「同一枚子被反复捉」，因此只在尚未定性的那些着之间求交集：
+  // 将军着本就不参与，否则一将一捉会因为将军那一着不捉该子而交集落空。
+  const chased = undecided.length > 0
+    ? perpetualChaseExists(history, frameByPly, cycle, side, undecided)
+    : false
+  for (const ply of undecided) {
+    actions.set(ply, chased ? 'chase' : 'idle')
+  }
+
+  const ordered = ownPlies.map((ply) => actions.get(ply)!)
+  return { behavior: resolveBehavior(ordered), actions: ordered }
+}
+
+/** 着着有威胁即禁止，按最重威胁命名；出现任一闲着则整体允许。 */
+function resolveBehavior(actions: CycleAction[]): CycleBehavior {
+  if (actions.length === 0 || actions.includes('idle')) return 'allowed'
+  if (actions.includes('check')) return 'long-check'
+  if (actions.includes('mate')) return 'long-mate'
+  return 'long-chase'
+}
+
+/**
+ * 是否存在一枚棋子被反复捉：该方每一着（在给定的候选着里）都捉它，
+ * 且对方每一着都使它脱身——否则那只是一个静止的攻击关系，不是「捉」。
+ */
+function perpetualChaseExists(
+  history: MoveRecord[],
+  frameByPly: Map<number, RuleFrame>,
+  cycle: { startPly: number; endPly: number },
+  side: Side,
+  chasingPlies: number[],
+): boolean {
+  let commonTargets: Set<string> | null = null
+  for (const ply of chasingPlies) {
     const targets = new Set(
       (frameByPly.get(ply)?.chases[side] ?? []).map(
         (threat) => threat.targetId,
@@ -298,8 +396,9 @@ function classifyCycleSide(
         [...previousTargets].filter((target) => targets.has(target)),
       )
     }
+    if (commonTargets.size === 0) return false
   }
-  if (!commonTargets || commonTargets.size === 0) return 'allowed'
+  if (!commonTargets || commonTargets.size === 0) return false
 
   for (const targetId of commonTargets) {
     let escapedEveryReply = true
@@ -314,14 +413,22 @@ function classifyCycleSide(
         break
       }
     }
-    if (escapedEveryReply) return 'long-chase'
+    if (escapedEveryReply) return true
   }
-  return 'allowed'
+  return false
 }
 
+/**
+ * 判罚等级。同级判和，高者判负。
+ *
+ * 将 > 杀 > 捉 沿用原有的「长将对长捉判长将负」口径；
+ * 混合威胁（如一将一捉）按其最重威胁归档，因此与长将同级。
+ */
 function cycleSeverity(behavior: CycleBehavior): number {
   switch (behavior) {
     case 'long-check':
+      return 3
+    case 'long-mate':
       return 2
     case 'long-chase':
       return 1

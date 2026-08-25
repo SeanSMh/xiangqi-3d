@@ -43,13 +43,31 @@ export interface MoveRecord extends Move {
   givesCheck: boolean
 }
 
-export type CycleBehavior = 'long-check' | 'long-chase' | 'allowed'
+/**
+ * 循环区间内单着的定性，按轻重排列：将 > 杀 > 捉 > 闲。
+ *
+ * 只有「闲」是允许着法。着着有威胁（哪怕手段混合，如一将一捉）即为禁止；
+ * 只要出现一步闲着，整个循环对该方就是允许的（一将一闲、一捉一闲皆然）。
+ */
+export type CycleAction = 'check' | 'mate' | 'chase' | 'idle'
+
+/**
+ * 某方在循环区间内的整体定性。禁止着法按其**最重**威胁命名——
+ * 因此「一将一捉」记为 `long-check`，判罚等级与长将同档，
+ * 但 `CycleAdjudication.actions` 保留了逐着定性以便解释判罚。
+ */
+export type CycleBehavior =
+  | 'long-check'
+  | 'long-mate'
+  | 'long-chase'
+  | 'allowed'
 
 export type GameEndReason =
   | 'checkmate'
   | 'stalemate'
   | 'repetition-draw'
   | 'perpetual-check'
+  | 'perpetual-mate'
   | 'perpetual-chase'
   | 'no-capture-limit'
   | 'bare-defenders'
@@ -60,6 +78,8 @@ export interface CycleAdjudication {
   periodPlies: number
   red: CycleBehavior
   black: CycleBehavior
+  /** 循环区间内各方自己每一着的定性，按出现顺序；只用于解释，不参与比较。 */
+  actions: Record<Side, CycleAction[]>
 }
 
 export interface GameOutcome {
@@ -80,6 +100,14 @@ export interface RuleFrame {
   /** 不含棋子 id、与 pieces 数组顺序无关，并包含行棋方。 */
   positionKey: string
   chases: Record<Side, ChaseThreat[]>
+  /**
+   * **走出这一着的一方**是否在做杀（下一着企图将死对方）。
+   *
+   * 与 `chases` 不同，这里不按阵营各存一份：棋例只在给某方自己的着定性时
+   * 用到「杀」，而那一着的行棋方必然就是被定性的一方。存成双方会多算一倍，
+   * 还会留下一个永远读不到的字段。
+   */
+  moverThreatensMate: boolean
 }
 
 export interface NaturalLimitState {

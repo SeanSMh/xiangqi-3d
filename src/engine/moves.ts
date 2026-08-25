@@ -19,7 +19,7 @@ import {
 } from './attacks'
 import {
   advanceRuleState,
-  emptyChases,
+  emptyThreats,
   evaluateAdjudication,
 } from './adjudication'
 
@@ -484,16 +484,21 @@ export function applyKnownLegalMove(
     pieces,
     sideToMove,
     record,
-    (occurrences) =>
-      // 捉子分析是规则层最贵的一步，只在真的会被用到时才付这笔钱：
-      // 将军局面不判捉，终局也不再进入循环裁决。
-      boardResult.status === 'playing' &&
-      !givesCheck &&
-      (chaseAnalysis === 'always' ||
-        (chaseAnalysis === 'if-repeated' && occurrences >= 2) ||
-        (chaseAnalysis === 'if-third' && occurrences >= 3))
-        ? analyzeChases(pieces)
-        : emptyChases(),
+    (occurrences) => {
+      // 威胁分析是规则层最贵的一步，只在真的会被用到时才付这笔钱。
+      // 将军着直接跳过：棋例里「将」已是最重威胁，不必再问它是否兼做杀或捉。
+      const worthAnalyzing =
+        boardResult.status === 'playing' &&
+        !givesCheck &&
+        (chaseAnalysis === 'always' ||
+          (chaseAnalysis === 'if-repeated' && occurrences >= 2) ||
+          (chaseAnalysis === 'if-third' && occurrences >= 3))
+      if (!worthAnalyzing) return emptyThreats()
+      return {
+        chases: analyzeChases(pieces),
+        moverThreatensMate: threatensMate(pieces, record.side),
+      }
+    },
   )
   const withRuleState: GameState = { ...boardResult, ruleState }
   if (withRuleState.status !== 'playing') return withRuleState
@@ -510,6 +515,37 @@ export function applyKnownLegalMove(
     winner: outcome.winner,
     outcome,
   }
+}
+
+/**
+ * 程序棋规中的“杀”：该方下一着企图将死对方。
+ *
+ * 按棋例的口径，“杀”是**威胁**而非既成事实——判定时假设对方不应对，
+ * 因此只需存在一着能把对方将死即可，不必验证对方能否化解。
+ * （能否化解决定的是这一手好不好，不决定它算不算杀。）
+ *
+ * 与“捉”一样不调用 applyMove，避免终局裁决递归。
+ */
+export function threatensMate(pieces: Piece[], side: Side): boolean {
+  const victim = oppositeSide(side)
+  for (const move of generateLegalMovesForSide(pieces, side)) {
+    const after = simulateMove(pieces, move)
+    // 先用便宜的将军判定过滤：不将军就一定不是将死。
+    if (!isInCheck(after, victim)) continue
+    if (!hasLegalMoveForSide(after, victim)) return true
+  }
+  return false
+}
+
+/** 无视实际轮次判断某方是否还有合法着；找到首个即停止。 */
+function hasLegalMoveForSide(pieces: Piece[], side: Side): boolean {
+  const occupancy = buildOccupancy(pieces)
+  return pieces.some(
+    (piece) =>
+      piece.side === side &&
+      !piece.captured &&
+      filterLegalMoves(occupancy, pieces, piece).length > 0,
+  )
 }
 
 /**

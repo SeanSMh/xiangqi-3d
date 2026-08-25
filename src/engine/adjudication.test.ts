@@ -5,6 +5,7 @@ import type {
   MoveRecord,
   Piece,
   PieceKind,
+  RuleFrame,
   Side,
 } from '../types/xiangqi'
 import { chooseAiMove } from '../ai/search'
@@ -12,12 +13,17 @@ import { GameTimeline } from '../game/timeline'
 import {
   advanceRuleState,
   createRuleState,
-  emptyChases,
+  emptyThreats,
   evaluateAdjudication,
   positionKey,
 } from './adjudication'
 import { pieceAt } from './board'
-import { analyzeChases, applyMove, isInCheck } from './moves'
+import {
+  analyzeChases,
+  applyMove,
+  isInCheck,
+  threatensMate,
+} from './moves'
 
 describe('程序棋规局面签名', () => {
   it('忽略棋子 id 与数组顺序，但包含当前行棋方', () => {
@@ -36,6 +42,218 @@ describe('程序棋规局面签名', () => {
       positionKey(renamedAndReordered, 'red'),
     )
     expect(positionKey(pieces, 'red')).not.toBe(positionKey(pieces, 'black'))
+  })
+})
+
+/**
+ * 造一个周期 4 着、恰好第三次同形的循环，逐着指定定性所需的输入。
+ *
+ * 循环分类的输入只有「历史 + 帧」，直接在这一层构造比拼 FEN 精确得多：
+ * 想验证「一将一捉判负」，就该能把「将、捉、将、捉」这个序列本身写出来，
+ * 而不是先花半天找一个恰好走出该序列的局面。
+ */
+function cyclicState(
+  plies: Array<{
+    side: Side
+    givesCheck?: boolean
+    mate?: boolean
+    /** 该着之后，各方正在捉的目标 id。 */
+    chases?: Partial<Record<Side, string[]>>
+  }>,
+): GameState {
+  const history: MoveRecord[] = plies.map((ply, index) => ({
+    ...move(`p${index}`, 0, 0, 0, 1),
+    side: ply.side,
+    givesCheck: ply.givesCheck === true,
+  }))
+
+  const period = 4
+  const frames: RuleFrame[] = []
+  for (let ply = 0; ply <= plies.length; ply += 1) {
+    const spec = ply === 0 ? undefined : plies[ply - 1]
+    frames.push({
+      ply,
+      positionKey: `cycle-${ply % period}`,
+      chases: {
+        red: (spec?.chases?.red ?? []).map((targetId) => ({
+          attackerId: 'attacker',
+          targetId,
+        })),
+        black: (spec?.chases?.black ?? []).map((targetId) => ({
+          attackerId: 'attacker',
+          targetId,
+        })),
+      },
+      moverThreatensMate: spec?.mate === true,
+    })
+  }
+
+  const state = game([
+    piece('rk', 'king', 'red', 4, 0),
+    piece('bk', 'king', 'black', 3, 9),
+    piece('rr', 'chariot', 'red', 0, 0),
+    piece('br', 'chariot', 'black', 8, 9),
+  ])
+  state.history = history
+  state.ruleState = {
+    ruleset: 'program-competition-2023',
+    frames,
+    currentPositionOccurrences: 3,
+    naturalLimit: {
+      countedPlies: 10,
+      checkCounts: { red: 0, black: 0 },
+      skipNextReply: false,
+    },
+  }
+  return state
+}
+
+const IDLE_PLY = { side: 'black' as Side }
+
+describe('棋例逐着定性', () => {
+  it('一将一捉：着着有威胁即判负，等级随最重威胁归入长将', () => {
+    const outcome = evaluateAdjudication(
+      cyclicState([
+        { side: 'red', givesCheck: true },
+        IDLE_PLY,
+        { side: 'red', chases: { red: ['victim'] } },
+        IDLE_PLY,
+        { side: 'red', givesCheck: true },
+        IDLE_PLY,
+        { side: 'red', chases: { red: ['victim'] } },
+        IDLE_PLY,
+      ]),
+    )
+
+    expect(outcome).toMatchObject({
+      reason: 'perpetual-check',
+      offender: 'red',
+      winner: 'black',
+      cycle: { red: 'long-check', black: 'allowed' },
+    })
+    expect(outcome?.cycle?.actions.red).toEqual([
+      'check',
+      'chase',
+      'check',
+      'chase',
+    ])
+  })
+
+  it('一将一闲：出现闲着即整体允许，双方同级判和', () => {
+    const outcome = evaluateAdjudication(
+      cyclicState([
+        { side: 'red', givesCheck: true },
+        IDLE_PLY,
+        { side: 'red' },
+        IDLE_PLY,
+        { side: 'red', givesCheck: true },
+        IDLE_PLY,
+        { side: 'red' },
+        IDLE_PLY,
+      ]),
+    )
+
+    expect(outcome).toMatchObject({
+      reason: 'repetition-draw',
+      offender: null,
+      winner: null,
+      cycle: { red: 'allowed', black: 'allowed' },
+    })
+    expect(outcome?.cycle?.actions.red).toEqual([
+      'check',
+      'idle',
+      'check',
+      'idle',
+    ])
+  })
+
+  it('长杀：着着做杀但从不将军，判负且原因为长杀', () => {
+    const outcome = evaluateAdjudication(
+      cyclicState([
+        { side: 'red', mate: true },
+        IDLE_PLY,
+        { side: 'red', mate: true },
+        IDLE_PLY,
+        { side: 'red', mate: true },
+        IDLE_PLY,
+        { side: 'red', mate: true },
+        IDLE_PLY,
+      ]),
+    )
+
+    expect(outcome).toMatchObject({
+      reason: 'perpetual-mate',
+      offender: 'red',
+      winner: 'black',
+      cycle: { red: 'long-mate', black: 'allowed' },
+    })
+    expect(outcome?.cycle?.actions.red).toEqual(['mate', 'mate', 'mate', 'mate'])
+  })
+
+  it('长将对长捉仍判长将方负，等级顺序未变', () => {
+    const outcome = evaluateAdjudication(
+      cyclicState([
+        { side: 'red', givesCheck: true },
+        { side: 'black', chases: { black: ['victim'] } },
+        { side: 'red', givesCheck: true },
+        { side: 'black', chases: { black: ['victim'] } },
+        { side: 'red', givesCheck: true },
+        { side: 'black', chases: { black: ['victim'] } },
+        { side: 'red', givesCheck: true },
+        { side: 'black', chases: { black: ['victim'] } },
+      ]),
+    )
+
+    // 黑方每一着都紧接红方将军，属应将，因此不判捉。
+    expect(outcome).toMatchObject({
+      reason: 'perpetual-check',
+      offender: 'red',
+      cycle: { red: 'long-check', black: 'allowed' },
+    })
+    expect(outcome?.cycle?.actions.black).toEqual([
+      'idle',
+      'idle',
+      'idle',
+      'idle',
+    ])
+  })
+
+  it('捉的目标不一致时不构成长捉，判和', () => {
+    const outcome = evaluateAdjudication(
+      cyclicState([
+        { side: 'red', chases: { red: ['victim-a'] } },
+        IDLE_PLY,
+        { side: 'red', chases: { red: ['victim-b'] } },
+        IDLE_PLY,
+        { side: 'red', chases: { red: ['victim-a'] } },
+        IDLE_PLY,
+        { side: 'red', chases: { red: ['victim-b'] } },
+        IDLE_PLY,
+      ]),
+    )
+
+    expect(outcome).toMatchObject({
+      reason: 'repetition-draw',
+      cycle: { red: 'allowed' },
+    })
+  })
+})
+
+describe('做杀判定', () => {
+  it('双车错可一着将死，判为做杀', () => {
+    const state = fromFen('4k4/R8/9/9/9/9/9/9/1R7/3K5 w')
+    expect(threatensMate(state.pieces, 'red')).toBe(true)
+  })
+
+  it('单车无法将死光杆将，不判做杀', () => {
+    const state = fromFen('4k4/9/9/9/9/9/9/9/1R7/3K5 w')
+    expect(threatensMate(state.pieces, 'red')).toBe(false)
+  })
+
+  it('做杀是威胁而非既成事实，不要求对方无法化解', () => {
+    // 黑方有车可回防，但红方「下一着企图将死」依然成立。
+    const state = fromFen('4k4/R8/9/9/9/9/8r/9/1R7/3K5 w')
+    expect(threatensMate(state.pieces, 'red')).toBe(true)
   })
 })
 
@@ -379,7 +597,7 @@ describe('其他程序终局与时间线', () => {
       state.pieces,
       'black',
       checking,
-      emptyChases,
+      emptyThreats,
     )
     expect(afterCheck.naturalLimit).toEqual({
       countedPlies: 42,
@@ -403,7 +621,7 @@ describe('其他程序终局与时间线', () => {
       replyState.pieces,
       'red',
       reply,
-      emptyChases,
+      emptyThreats,
     )
     expect(afterReply.naturalLimit).toEqual({
       countedPlies: 42,

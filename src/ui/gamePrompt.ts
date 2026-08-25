@@ -1,5 +1,6 @@
 import { pieceLabel } from '../engine/board'
 import type {
+  CycleAction,
   CycleBehavior,
   GameOutcome,
   GameState,
@@ -21,6 +22,7 @@ export type GamePromptCode =
   | 'result-stalemate'
   | 'result-repetition-draw'
   | 'result-perpetual-check'
+  | 'result-perpetual-mate'
   | 'result-perpetual-chase'
   | 'result-no-capture-limit'
   | 'result-bare-defenders'
@@ -317,16 +319,26 @@ function resolveOutcomePrompt(state: PromptGameState): GamePrompt | null {
       case 'perpetual-check':
         return violationPrompt(
           'result-perpetual-check',
+          'long-check',
+          outcome,
           winner,
           offender,
-          '长将',
+        )
+      case 'perpetual-mate':
+        return violationPrompt(
+          'result-perpetual-mate',
+          'long-mate',
+          outcome,
+          winner,
+          offender,
         )
       case 'perpetual-chase':
         return violationPrompt(
           'result-perpetual-chase',
+          'long-chase',
+          outcome,
           winner,
           offender,
-          '长捉',
         )
       case 'no-capture-limit':
         return {
@@ -404,6 +416,8 @@ function cycleBehaviorName(behavior: CycleBehavior): string {
   switch (behavior) {
     case 'long-check':
       return '长将'
+    case 'long-mate':
+      return '长杀'
     case 'long-chase':
       return '长捉'
     case 'allowed':
@@ -411,12 +425,52 @@ function cycleBehaviorName(behavior: CycleBehavior): string {
   }
 }
 
+const CYCLE_ACTION_NAMES: Record<CycleAction, string> = {
+  check: '将',
+  mate: '杀',
+  chase: '捉',
+  idle: '闲',
+}
+
+/**
+ * 违规方的手段名称。
+ *
+ * 着着有威胁但手段混合时（一将一捉、一杀一捉），归档等级取最重威胁，
+ * 但**文案不能直接叫「长将」**——那会让玩家对着棋谱找不到连续将军。
+ * 因此混合时按实际出现过的手段拼出「一将一捉」这类说法。
+ */
+function violationName(
+  behavior: CycleBehavior,
+  actions: CycleAction[] | undefined,
+): string {
+  const kinds = new Set(actions ?? [])
+  kinds.delete('idle')
+  if (kinds.size <= 1) return cycleBehaviorName(behavior)
+  const ordered: CycleAction[] = ['check', 'mate', 'chase']
+  return ordered
+    .filter((action) => kinds.has(action))
+    .map((action) => `一${CYCLE_ACTION_NAMES[action]}`)
+    .join('')
+}
+
 function violationPrompt(
-  code: 'result-perpetual-check' | 'result-perpetual-chase',
+  code:
+    | 'result-perpetual-check'
+    | 'result-perpetual-mate'
+    | 'result-perpetual-chase',
+  /** 缺少 cycle 明细时的兜底名称，直接来自终局原因，不做猜测。 */
+  fallbackBehavior: CycleBehavior,
+  outcome: GameOutcome,
   winner: string | null,
   offender: string | null,
-  violation: '长将' | '长捉',
 ): GamePrompt {
+  const onRed = outcome.offender === 'red'
+  const behavior = (onRed ? outcome.cycle?.red : outcome.cycle?.black) ??
+    fallbackBehavior
+  const actions = onRed
+    ? outcome.cycle?.actions.red
+    : outcome.cycle?.actions.black
+  const violation = violationName(behavior, actions)
   return {
     code,
     tone: 'success',
