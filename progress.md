@@ -813,6 +813,7 @@ if (moves.some((record) => record.givesCheck)) return 'allowed'
 
 - `npm test`：19 个测试文件、243 项测试全过。
 - `npm run typecheck`、`npm run build` 与 `git diff --check` 通过；生产目录没有 `.map` 文件。
-- `npm audit --omit=dev` 连接官方漏洞库复核，结果为 `0 vulnerabilities`。
+- 全新安装发现 Vite 间接锁定的 `nanoid 3.3.17` 命中高危拒绝服务公告；锁文件最小更新
+  到修复版 `3.3.18` 后，`npm ci` 与完整 `npm audit` 均为 `0 vulnerabilities`。
 - 生产目录与资源库复扫无生成来源元数据；浏览器实测设置面板显示「作品：Bril」，
   人机模式可正常切换为 `computer` 状态，初始棋盘渲染正常，控制台 0 error / 0 warning。

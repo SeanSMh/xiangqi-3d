@@ -4,6 +4,10 @@
 
 作者：**Bril**
 
+在线体验：[https://xq.prodpass.net/](https://xq.prodpass.net/)
+
+版权：© 2026 Bril。当前未附开源许可证。
+
 ## 目录结构
 
 ```

@@ -4,6 +4,7 @@
   "private": true,
   "description": "Bril 创作的中国象棋 3D 对战（走子动画 + 吃子特效）",
   "author": "Bril",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "vite",
