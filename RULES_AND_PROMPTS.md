@@ -1,6 +1,6 @@
 # 象棋规则档案与提示词
 
-本文是本项目的规则与中文提示词基线。实现、测试、AI 搜索、棋谱回放和界面文案都应以本文为准。
+本文是本项目的规则与中文提示词基线。实现、测试、电脑搜索、棋谱回放和界面文案都应以本文为准。
 
 ## 1. 规则档案
 
@@ -9,7 +9,7 @@
 | `ruleProfile` | `program-competition-2023` |
 | 裁决方式 | 网页端自动裁决，无需棋手申请或人工裁判介入 |
 | 主要依据 | 皮卡鱼开源社区《象棋程序竞赛规则》，修订日期 2023-11-22 |
-| 适用范围 | 本地双人、人机对弈、AI 搜索、棋谱与回放 |
+| 适用范围 | 本地双人、人机对弈、电脑搜索、棋谱与回放 |
 | 非目标 | 不宣称完整复刻中国象棋协会 2020 版线下人工裁判棋例 |
 
 本档案选择可确定执行、可自动测试的程序规则。若未来增加“中国象棋协会 2020”或“世界象棋规则”模式，必须使用新的 `ruleProfile`，不得在同一档案内静默改变循环或限着判法。
@@ -53,7 +53,7 @@
 - 所有未被吃棋子的颜色、种类和坐标完全相同；
 - 当前轮到行棋的一方相同。
 
-局面键不包含棋子 `id`、棋子数组顺序、已被吃棋子、历史着法、动画状态、选中状态、AI 状态或界面状态。同类同色棋子即使内部 `id` 不同，只要占据相同坐标，也属于同一盘面。
+局面键不包含棋子 `id`、棋子数组顺序、已被吃棋子、历史着法、动画状态、选中状态、电脑对手状态或界面状态。同类同色棋子即使内部 `id` 不同，只要占据相同坐标，也属于同一盘面。
 
 初始局面必须作为第一个局面键写入规则历史。每次合法着提交并完成盘面终局检测后，再记录新局面键。
 
@@ -156,7 +156,7 @@
 
 ## 9. 结构化提示词
 
-规则层返回结构化 `GameOutcome.reason`；界面统一通过 `deriveGamePrompt()` 把规则事实、交互结果、AI、回放和弹窗状态转成 `GamePrompt`。HUD 与 `render_game_to_text()` 共用该结果，不从自由文本反推规则状态。
+规则层返回结构化 `GameOutcome.reason`；界面统一通过 `deriveGamePrompt()` 把规则事实、交互结果、电脑对手、回放和弹窗状态转成 `GamePrompt`。HUD 与 `render_game_to_text()` 共用该结果，不从自由文本反推规则状态。
 
 当前稳定结构：
 
@@ -189,11 +189,11 @@ interface GamePrompt {
 | `wrong-side`、`no-selection`、`friendly-occupied`、`outside-board` | `warning` | 选择或落点错误 | 给出可执行的下一步提示 |
 | `illegal-pattern`、`path-blocked`、`horse-leg-blocked`、`elephant-eye-blocked`、`elephant-cross-river`、`palace-bound`、`cannon-screen`、`pawn-direction` | `warning` | 棋子几何或阻挡规则不满足 | 说明马腿、象眼、炮架、九宫等具体原因 |
 | `exposes-own-king`、`kings-facing` | `danger` | 着后送将或将帅照面 | 明确指出王安全错误 |
-| `animation`、`ai-animation`、`ai-thinking`、`ai-turn`、`ai-paused-history`、`ai-error` | `info` / `warning` / `danger` | 演出或 AI 状态 | 解释锁盘、暂停和恢复方式 |
+| `animation`、`computer-animation`、`computer-thinking`、`computer-turn`、`computer-paused-history`、`computer-error` | `info` / `warning` / `danger` | 演出或电脑对手状态 | 解释锁盘、暂停和恢复方式 |
 | `replay-playing`、`replay-view`、`match-settings`、`rule-help` | `info` | 回放或模态弹窗 | 说明棋盘只读及返回方式 |
 | `turn-human`、`turn-local` | `info` | 正常待操作状态 | 说明当前行棋方与基本操作 |
 
-`result-draw` 与 `result-adjudicated` 仅用于缺失细分原因的旧快照兼容回退。`terminal`、`locked-animation`、`locked-ai`、`locked-replay`、`locked-settings` 是点击被锁棋盘时的短时交互反馈。
+`result-draw` 与 `result-adjudicated` 仅用于缺失细分原因的旧快照兼容回退。`terminal`、`locked-animation`、`locked-computer`、`locked-replay`、`locked-settings` 是点击被锁棋盘时的短时交互反馈。
 
 第二次同形只显示中性 `repetition-warning`，不提前猜测责任方；第三次同形提交后才由规则引擎确定长将、长捉或允许循环。吃子会立即把结构化自然限着计数归零，但不额外弹出覆盖行棋提示的 toast。
 
@@ -202,10 +202,10 @@ interface GamePrompt {
 ## 10. 实现与验收约束
 
 - 本地双人和人机模式必须共用同一个规则裁决入口。
-- AI 搜索必须携带足够的局面键、循环分类和限着上下文；不得因搜索中清空历史而选择立即规则判负的着法。
+- 电脑搜索必须携带足够的局面键、循环分类和限着上下文；不得因搜索中清空历史而选择立即规则判负的着法。
 - 规则判断必须是纯逻辑，不能依赖动画时钟、DOM、Web Worker 返回顺序或帧率。
 - 将死/困毙、循环、自然限着和死局的终局结果必须可悔棋、可回放、可确定性复现。
-- 至少覆盖：局面键与棋子数组顺序无关、行棋方不同则 key 不同；双方允许循环和棋；单方长将判负；单方长捉同一目标判负；追逐不同目标不误判；**一将一捉判负、一将一闲判和、长杀判负、应将不判捉**；第 119/120 有效着边界；吃子清零；第 11 次将军及对应应将不计；第 120 着同时将死时将死优先；只剩将士象和棋；AI 不选择立即规则判负着。
+- 至少覆盖：局面键与棋子数组顺序无关、行棋方不同则 key 不同；双方允许循环和棋；单方长将判负；单方长捉同一目标判负；追逐不同目标不误判；**一将一捉判负、一将一闲判和、长杀判负、应将不判捉**；第 119/120 有效着边界；吃子清零；第 11 次将军及对应应将不计；第 120 着同时将死时将死优先；只剩将士象和棋；电脑对手不选择立即规则判负着。
 - 走子与将军的快路径（`src/engine/attacks.ts` 的占位表与攻击反查）必须与「摊开全部伪合法着」的朴素写法**逐格、逐着等价**，并由 `src/engine/attacks.test.ts` 在实战局面与散布局面上同时验证。快路径只允许更快，不允许改变任何裁决。
 
 ## 11. 依据与延伸阅读

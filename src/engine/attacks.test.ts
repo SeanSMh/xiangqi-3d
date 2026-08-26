@@ -121,7 +121,7 @@ const ALL_KINDS: readonly PieceKind[] = [
 
 /**
  * 散布局面：棋子被丢到棋盘任意位置，包括士出宫、象过河、兵倒退等
- * 实战不可能出现的摆法。这类局面照样会经过规则层（悔棋分支、AI 叶节点、
+ * 实战不可能出现的摆法。这类局面照样会经过规则层（悔棋分支、电脑搜索叶节点、
  * 捉子分析里的假想吃子），而且专挑几何判据的边界。
  */
 function scatteredPosition(seed: number): Piece[] {

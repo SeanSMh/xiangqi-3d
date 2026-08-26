@@ -1,14 +1,14 @@
 import type { GameState, Move } from '../types/xiangqi'
 
-export type AiDifficulty = 'easy' | 'normal' | 'hard'
+export type ComputerDifficulty = 'easy' | 'normal' | 'hard'
 
-export interface AiSearchOptions {
-  difficulty: AiDifficulty
+export interface ComputerSearchOptions {
+  difficulty: ComputerDifficulty
   maxNodes?: number
   seed?: number
 }
 
-export interface AiSearchResult {
+export interface ComputerSearchResult {
   move: Move | null
   score: number
   completedDepth: number
@@ -16,20 +16,20 @@ export interface AiSearchResult {
   principalVariation: Move[]
 }
 
-export interface AiWorkerRequest {
+export interface ComputerWorkerRequest {
   type: 'search'
   requestId: number
   timelineRevision: number
   state: GameState
-  options: AiSearchOptions
+  options: ComputerSearchOptions
 }
 
-export type AiWorkerResponse =
+export type ComputerWorkerResponse =
   | {
       type: 'result'
       requestId: number
       timelineRevision: number
-      result: AiSearchResult
+      result: ComputerSearchResult
     }
   | {
       type: 'error'

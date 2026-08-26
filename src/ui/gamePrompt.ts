@@ -17,7 +17,7 @@ export type GamePromptTone = 'info' | 'warning' | 'danger' | 'success'
 export type GamePromptCode =
   | InteractionFeedbackReason
   | 'animation'
-  | 'ai-animation'
+  | 'computer-animation'
   | 'result-checkmate'
   | 'result-stalemate'
   | 'result-repetition-draw'
@@ -32,14 +32,14 @@ export type GamePromptCode =
   | 'replay-view'
   | 'match-settings'
   | 'rule-help'
-  | 'ai-error'
+  | 'computer-error'
   | 'must-answer-check'
   | 'repetition-warning'
   | 'natural-limit-progress'
   | 'natural-limit-warning'
-  | 'ai-paused-history'
-  | 'ai-thinking'
-  | 'ai-turn'
+  | 'computer-paused-history'
+  | 'computer-thinking'
+  | 'computer-turn'
   | 'piece-selected'
   | 'turn-human'
   | 'turn-local'
@@ -73,7 +73,7 @@ export type InteractionFeedbackReason =
   | 'kings-facing'
   | 'terminal'
   | 'locked-animation'
-  | 'locked-ai'
+  | 'locked-computer'
   | 'locked-replay'
   | 'locked-settings'
 
@@ -99,10 +99,10 @@ export interface GamePromptContext {
     cursorPly: number
     livePly: number
   }
-  matchMode?: 'local' | 'ai'
-  aiTurn?: boolean
+  matchMode?: 'local' | 'computer'
+  computerTurn?: boolean
   historyOpen?: boolean
-  ai?: {
+  computer?: {
     phase: 'idle' | 'thinking' | 'animating' | 'error'
     error?: string | null
   }
@@ -123,11 +123,11 @@ export function deriveGamePrompt(context: GamePromptContext): GamePrompt {
 
   if (context.animationBusy) {
     return {
-      code: context.ai?.phase === 'animating' ? 'ai-animation' : 'animation',
+      code: context.computer?.phase === 'animating' ? 'computer-animation' : 'animation',
       tone: 'warning',
       title:
-        context.ai?.phase === 'animating'
-          ? 'AI 已落子 · 战斗演出中'
+        context.computer?.phase === 'animating'
+          ? '电脑已落子 · 战斗演出中'
           : '战斗演出中',
       detail: '棋盘输入已锁定',
     }
@@ -176,24 +176,24 @@ export function deriveGamePrompt(context: GamePromptContext): GamePrompt {
     }
   }
 
-  if (context.ai?.phase === 'error') {
+  if (context.computer?.phase === 'error') {
     return {
-      code: 'ai-error',
+      code: 'computer-error',
       tone: 'danger',
-      title: 'AI 未能完成落子',
-      detail: '黑方 AI 暂时无法行动',
+      title: '电脑未能完成落子',
+      detail: '黑方电脑暂时无法行动',
       action: '可悔棋后重试、重开或切换本地双人',
-      ...(context.ai.error ? { secondary: context.ai.error } : {}),
+      ...(context.computer.error ? { secondary: context.computer.error } : {}),
     }
   }
 
   if (context.state.inCheck) {
-    if (context.aiTurn) {
+    if (context.computerTurn) {
       return {
         code: 'must-answer-check',
         tone: 'danger',
-        title: '黑方 AI 正在应将',
-        detail: 'AI 只能选择能够解除将军的着法',
+        title: '黑方电脑正在应将',
+        detail: '电脑只能选择能够解除将军的着法',
         ...(ruleSecondary ? { secondary: ruleSecondary } : {}),
       }
     }
@@ -212,32 +212,32 @@ export function deriveGamePrompt(context: GamePromptContext): GamePrompt {
     }
   }
 
-  if (context.historyOpen && context.aiTurn && context.ai?.phase === 'idle') {
+  if (context.historyOpen && context.computerTurn && context.computer?.phase === 'idle') {
     return {
-      code: 'ai-paused-history',
+      code: 'computer-paused-history',
       tone: 'info',
-      title: 'AI 已暂停',
+      title: '电脑对手已暂停',
       detail: '正在查看棋谱',
-      action: '关闭棋谱后 AI 会继续思考',
+      action: '关闭棋谱后电脑对手会继续思考',
       ...(ruleSecondary ? { secondary: ruleSecondary } : {}),
     }
   }
 
-  if (context.ai?.phase === 'thinking') {
+  if (context.computer?.phase === 'thinking') {
     return {
-      code: 'ai-thinking',
+      code: 'computer-thinking',
       tone: 'info',
-      title: '黑方 AI 正在思考',
+      title: '黑方电脑正在思考',
       action: '思考期间可悔棋、重开或查看棋谱',
       ...(ruleSecondary ? { secondary: ruleSecondary } : {}),
     }
   }
 
-  if (context.aiTurn) {
+  if (context.computerTurn) {
     return {
-      code: 'ai-turn',
+      code: 'computer-turn',
       tone: 'info',
-      title: '轮到黑方 AI',
+      title: '轮到黑方电脑',
       detail: '请稍候',
       action: '可悔棋、重开或查看棋谱',
       ...(ruleSecondary ? { secondary: ruleSecondary } : {}),
@@ -268,7 +268,7 @@ export function deriveGamePrompt(context: GamePromptContext): GamePrompt {
     }
   }
 
-  if (context.matchMode === 'ai') {
+  if (context.matchMode === 'computer') {
     return {
       code: 'turn-human',
       tone: 'info',
@@ -535,8 +535,8 @@ function interactionPrompt(
       return info(feedback.reason, '对局已经结束', '可悔棋或重开新局')
     case 'locked-animation':
       return info(feedback.reason, '走子演出进行中', '请稍候')
-    case 'locked-ai':
-      return info(feedback.reason, '轮到黑方 AI', '请稍候')
+    case 'locked-computer':
+      return info(feedback.reason, '轮到黑方电脑', '请稍候')
     case 'locked-replay':
       return info(feedback.reason, '棋谱回放为只读', '返回当前局面后才能行棋')
     case 'locked-settings':

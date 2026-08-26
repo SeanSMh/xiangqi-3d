@@ -9,16 +9,16 @@ import {
 } from './animation/combatProfile'
 import { GameAudio } from './audio/gameAudio'
 import { pieceAt, pieceLabel } from './engine/board'
-import { AiCoordinator } from './game/aiCoordinator'
+import { ComputerCoordinator } from './game/computerCoordinator'
 import {
   GameController,
   type InteractionResult,
 } from './game/controller'
 import {
   DEFAULT_MATCH_CONFIG,
-  AI_SIDE,
+  COMPUTER_SIDE,
   HUMAN_SIDE,
-  isAiTurn,
+  isComputerTurn,
   type MatchConfig,
 } from './game/match'
 import {
@@ -80,7 +80,7 @@ const hud = new Hud(app, {
   onReplayNext: () => replayNext(),
   onReturnToLive: () => returnToLive(),
 })
-const aiCoordinator = new AiCoordinator(undefined, () => syncUiAndMarkers())
+const computerCoordinator = new ComputerCoordinator(undefined, () => syncUiAndMarkers())
 let simulationTime = 0
 let interactionFeedback: InteractionFeedback | null = null
 let interactionFeedbackExpiresAt = 0
@@ -148,7 +148,7 @@ window.visualViewport?.addEventListener('resize', refitSceneToViewport, {
 function syncUiAndMarkers(): void {
   const state = controller.getState()
   const timeline = controller.getTimelineSnapshot()
-  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const computer = computerCoordinator.getSnapshot(matchConfig.difficulty)
   const animation = animations.getSnapshot()
   const pendingCaptureId = animation.active
     ? animation.move.capturedId
@@ -173,13 +173,13 @@ function syncUiAndMarkers(): void {
       timeline,
       moveLog: controller.getMoveLog(),
       matchConfig,
-      ai,
+      computer,
       prompt,
     },
   )
   scene.renderer.domElement.setAttribute(
     'aria-busy',
-    String(animations.isBusy || ai.pending),
+    String(animations.isBusy || computer.pending),
   )
 }
 
@@ -190,7 +190,7 @@ function snapEntireView(): void {
 
 function restartGame(): void {
   gameAudio.reset()
-  aiCoordinator.cancel(true)
+  computerCoordinator.cancel(true)
   stopReplay()
   controller.reset()
   simulationTime = 0
@@ -207,7 +207,7 @@ function toggleMatchSettings(): void {
     (animations.isBusy ||
       replayPlaying ||
       controller.getTimelineSnapshot().isReviewing ||
-      aiCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
+      computerCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
   ) {
     return
   }
@@ -257,7 +257,7 @@ function toggleDemoReel(): void {
   }
   if (hud.isMatchSettingsOpen || hud.isRuleHelpOpen) return
   stopReplay()
-  aiCoordinator.cancel(true)
+  computerCoordinator.cancel(true)
   if (controller.getTimelineSnapshot().isReviewing) {
     controller.returnToLive()
     animations.cancelAndSnap(controller.getState())
@@ -302,7 +302,7 @@ function toggleRuleHelp(): void {
     (animations.isBusy ||
       replayPlaying ||
       controller.getTimelineSnapshot().isReviewing ||
-      aiCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
+      computerCoordinator.getSnapshot(matchConfig.difficulty).phase === 'thinking')
   ) {
     return
   }
@@ -334,7 +334,7 @@ function advanceSimulation(milliseconds: number): void {
   }
   if (animationWasBusy && !animations.isBusy) {
     clearInteractionFeedback()
-    aiCoordinator.finishAnimation()
+    computerCoordinator.finishAnimation()
     changed = true
   }
 
@@ -353,19 +353,19 @@ function advanceSimulation(milliseconds: number): void {
     }
   }
 
-  if (advanceAi(animationWasBusy ? 0 : milliseconds)) {
+  if (advanceComputer(animationWasBusy ? 0 : milliseconds)) {
     changed = true
   }
 
   if (changed) syncUiAndMarkers()
 }
 
-function advanceAi(milliseconds: number): boolean {
+function advanceComputer(milliseconds: number): boolean {
   const state = controller.getState()
   const timeline = controller.getTimelineSnapshot()
-  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const computer = computerCoordinator.getSnapshot(matchConfig.difficulty)
   const eligible =
-    isAiTurn(matchConfig, state) &&
+    isComputerTurn(matchConfig, state) &&
     !animations.isBusy &&
     !replayPlaying &&
     !timeline.isReviewing &&
@@ -374,16 +374,16 @@ function advanceAi(milliseconds: number): boolean {
     !hud.isRuleHelpOpen
 
   if (!eligible) return false
-  if (ai.phase === 'error' || ai.phase === 'animating') return false
-  if (ai.phase === 'idle') {
-    aiCoordinator.begin(state, matchConfig.difficulty, timeline.revision)
+  if (computer.phase === 'error' || computer.phase === 'animating') return false
+  if (computer.phase === 'idle') {
+    computerCoordinator.begin(state, matchConfig.difficulty, timeline.revision)
     return true
   }
 
-  const result = aiCoordinator.advance(milliseconds, timeline.revision)
+  const result = computerCoordinator.advance(milliseconds, timeline.revision)
   if (!result) return false
   if (!result.move) {
-    aiCoordinator.fail('AI 没有返回可执行着法')
+    computerCoordinator.fail('电脑对手没有返回可执行着法')
     return true
   }
   const currentState = controller.getState()
@@ -391,33 +391,33 @@ function advanceAi(milliseconds: number): boolean {
   if (
     currentTimeline.revision !== timeline.revision ||
     currentTimeline.isReviewing ||
-    !isAiTurn(matchConfig, currentState) ||
+    !isComputerTurn(matchConfig, currentState) ||
     animations.isBusy ||
     replayPlaying ||
     hud.isHistoryOpen ||
     hud.isMatchSettingsOpen ||
     hud.isRuleHelpOpen
   ) {
-    aiCoordinator.cancel()
+    computerCoordinator.cancel()
     return true
   }
 
   const committed = controller.tryCommitMove(result.move)
   if (committed.type !== 'moved') {
-    aiCoordinator.fail(`AI 候选未通过权威规则校验：${committed.reason}`)
+    computerCoordinator.fail(`电脑候选着未通过权威规则校验：${committed.reason}`)
     return true
   }
-  aiCoordinator.markCommitted(result)
+  computerCoordinator.markCommitted(result)
   startMoveAnimation(committed.move)
   return true
 }
 
 function undoLastMove(): void {
   if (controller.getTimelineSnapshot().isReviewing) return
-  aiCoordinator.cancel(true)
+  computerCoordinator.cancel(true)
   stopReplay()
   const undone =
-    matchConfig.mode === 'ai'
+    matchConfig.mode === 'computer'
       ? controller.undoToSide(HUMAN_SIDE)
       : controller.undoLastMove()
         ? 1
@@ -432,7 +432,7 @@ function undoLastMove(): void {
 function toggleHistory(): void {
   clearInteractionFeedback()
   const opening = !hud.isHistoryOpen
-  if (opening) aiCoordinator.cancel()
+  if (opening) computerCoordinator.cancel()
   if (!opening) {
     stopReplay()
     if (!animations.isBusy) {
@@ -446,7 +446,7 @@ function toggleHistory(): void {
 
 function seekReplay(ply: number): void {
   if (animations.isBusy || replayPlaying) return
-  aiCoordinator.cancel()
+  computerCoordinator.cancel()
   if (!controller.seekReplay(ply)) return
   gameAudio.reset()
   clearInteractionFeedback()
@@ -461,7 +461,7 @@ function replayFirst(): void {
 
 function replayPrevious(): void {
   if (animations.isBusy || replayPlaying) return
-  aiCoordinator.cancel()
+  computerCoordinator.cancel()
   if (!controller.stepReplayBackward()) return
   gameAudio.reset()
   clearInteractionFeedback()
@@ -471,7 +471,7 @@ function replayPrevious(): void {
 
 function replayNext(): void {
   if (animations.isBusy || replayPlaying) return
-  aiCoordinator.cancel()
+  computerCoordinator.cancel()
   if (!controller.stepReplayForward()) return
   gameAudio.reset()
   clearInteractionFeedback()
@@ -481,7 +481,7 @@ function replayNext(): void {
 
 function returnToLive(): void {
   if (animations.isBusy) return
-  aiCoordinator.cancel()
+  computerCoordinator.cancel()
   stopReplay()
   gameAudio.reset()
   clearInteractionFeedback()
@@ -501,7 +501,7 @@ function toggleReplay(): void {
     return
   }
 
-  aiCoordinator.cancel()
+  computerCoordinator.cancel()
   gameAudio.reset()
   clearInteractionFeedback()
   hud.setHistoryOpen(true)
@@ -640,7 +640,7 @@ function startMoveAnimation(move: Move): void {
   if (!started) {
     gameAudio.dispatch({ type: 'animation-finished' })
     snapEntireView()
-    aiCoordinator.finishAnimation()
+    computerCoordinator.finishAnimation()
     return
   }
   syncUiAndMarkers()
@@ -657,26 +657,26 @@ type InputLockedReason =
   | 'match-settings'
   | 'rule-help'
   | 'terminal'
-  | 'ai-error'
-  | 'ai-thinking'
-  | 'ai-paused-history'
-  | 'ai-turn'
+  | 'computer-error'
+  | 'computer-thinking'
+  | 'computer-paused-history'
+  | 'computer-turn'
 
 function getInputLockedReason(state: GameState): InputLockedReason | null {
   const timeline = controller.getTimelineSnapshot()
-  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const computer = computerCoordinator.getSnapshot(matchConfig.difficulty)
   if (animations.isBusy) return 'animation'
   if (replayPlaying) return 'replay-playing'
   if (timeline.isReviewing) return 'replay-view'
   if (hud.isMatchSettingsOpen) return 'match-settings'
   if (hud.isRuleHelpOpen) return 'rule-help'
   if (state.status !== 'playing') return 'terminal'
-  if (ai.phase === 'error') return 'ai-error'
-  if (hud.isHistoryOpen && isAiTurn(matchConfig, state)) {
-    return 'ai-paused-history'
+  if (computer.phase === 'error') return 'computer-error'
+  if (hud.isHistoryOpen && isComputerTurn(matchConfig, state)) {
+    return 'computer-paused-history'
   }
-  if (ai.phase === 'thinking') return 'ai-thinking'
-  if (isAiTurn(matchConfig, state)) return 'ai-turn'
+  if (computer.phase === 'thinking') return 'computer-thinking'
+  if (isComputerTurn(matchConfig, state)) return 'computer-turn'
   return null
 }
 
@@ -694,11 +694,11 @@ function feedbackForInputLock(
       return { reason: 'locked-settings' }
     case 'terminal':
       return { reason: 'terminal' }
-    case 'ai-thinking':
-    case 'ai-paused-history':
-    case 'ai-turn':
-      return { reason: 'locked-ai' }
-    case 'ai-error':
+    case 'computer-thinking':
+    case 'computer-paused-history':
+    case 'computer-turn':
+      return { reason: 'locked-computer' }
+    case 'computer-error':
       return null
   }
 }
@@ -839,7 +839,7 @@ window.render_game_to_text = () => {
   const moveLog = controller.getMoveLog()
   const selected = controller.getSelectedPiece()
   const lastMove = state.history.at(-1)
-  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const computer = computerCoordinator.getSnapshot(matchConfig.difficulty)
   const animation = animations.getSnapshot()
   const pendingCaptureId = animation.active
     ? animation.move.capturedId
@@ -891,7 +891,7 @@ window.render_game_to_text = () => {
       match: {
         ...matchConfig,
         humanSide: HUMAN_SIDE,
-        aiSide: AI_SIDE,
+        computerSide: COMPUTER_SIDE,
         settingsOpen: hud.isMatchSettingsOpen,
         ruleHelpOpen: hud.isRuleHelpOpen,
       },
@@ -907,7 +907,7 @@ window.render_game_to_text = () => {
         upgrades: frameBudget.upgrades,
         recoveryStreak: frameBudget.recoveryStreak,
       },
-      ai,
+      computer,
       audio: gameAudio.getSnapshot(),
       animation,
       animationTiming: {
@@ -997,7 +997,7 @@ function createCurrentPrompt(
   legalCount: number,
 ): GamePrompt {
   const timeline = controller.getTimelineSnapshot()
-  const ai = aiCoordinator.getSnapshot(matchConfig.difficulty)
+  const computer = computerCoordinator.getSnapshot(matchConfig.difficulty)
   return deriveGamePrompt({
     state,
     selected,
@@ -1006,9 +1006,9 @@ function createCurrentPrompt(
     replayPlaying,
     timeline,
     matchMode: matchConfig.mode,
-    aiTurn: isAiTurn(matchConfig, state),
+    computerTurn: isComputerTurn(matchConfig, state),
     historyOpen: hud.isHistoryOpen,
-    ai,
+    computer,
     activeDialog: hud.isMatchSettingsOpen
       ? 'match-settings'
       : hud.isRuleHelpOpen
@@ -1104,5 +1104,5 @@ function sampleFrameBudget(deltaMs: number): void {
 requestAnimationFrame(loop)
 
 console.info(
-  '[xiangqi-3d] 对局系统已就绪：支持拖动环绕、本地双人、三级 AI、整回合悔棋与棋谱回放。',
+  '[xiangqi-3d] 对局系统已就绪：支持拖动环绕、本地双人、三级电脑对手、整回合悔棋与棋谱回放。',
 )

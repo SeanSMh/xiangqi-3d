@@ -2,7 +2,8 @@
   "name": "xiangqi-3d",
   "version": "0.1.0",
   "private": true,
-  "description": "中国象棋 3D 对战 — 复刻 3D Chess Battle 风格（走子动画 + 吃子特效）",
+  "description": "Bril 创作的中国象棋 3D 对战（走子动画 + 吃子特效）",
+  "author": "Bril",
   "type": "module",
   "scripts": {
     "dev": "vite",

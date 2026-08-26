@@ -185,7 +185,7 @@ export class GameController {
     return undone
   }
 
-  /** 程序化落子统一入口；AI 与棋盘点击最终都由规则引擎二次校验。 */
+  /** 程序化落子统一入口；电脑对手与棋盘点击最终都由规则引擎二次校验。 */
   tryCommitMove(requestedMove: Move): CommitMoveResult {
     const timeline = this.timeline.getSnapshot()
     if (timeline.isReviewing) {

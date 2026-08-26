@@ -1,16 +1,19 @@
 # 3D Chess → 中国象棋复刻参考包
 
-从 [X 视频演示](https://x.com/cellinlab/status/2084507607713116460)（源为 Alex Nguyen / Rork 3D Chess）导出的 **全帧画面、UI、动效序列、音频与规格文档**，用于开发中国象棋 3D 对战版。
+从 [Alex Nguyen 的 X 视频演示](https://x.com/cellinlab/status/2084507607713116460)导出的 **全帧画面、UI、动效序列、音频与规格文档**，用于开发中国象棋 3D 对战版。
 
 ## 所属项目
 
 ```
-/Users/bril/projects/xiangqi-3d
+xiangqi-3d/
 └── resources/reference/    ← 当前目录
 ```
 
 上级资源说明：`../README.md`  
 项目说明：`../../README.md`
+
+> **远端仓库不包含大体积参考素材。**源视频、逐帧序列、裁切图与音频仅在本地留存，
+> 并由 `.gitignore` 排除；克隆远端仓库后，本页列出的对应文件需要自行补齐才能预览。
 
 ## 目录结构
 
@@ -30,7 +33,6 @@
 ## 打开方式
 
 ```bash
-cd /Users/bril/projects/xiangqi-3d
 npm run open:reference
 # 或
 open resources/reference/index.html
@@ -39,5 +41,5 @@ open resources/reference/index.html
 ## 说明
 
 - 原视频分辨率 **1320×720**，**60fps**，时长约 **2 分 52 秒**。
-- 左下角录屏控件、右下角 `Built with Rork` **不属于游戏本体**，复刻时忽略。
+- 左下角录屏控件、右下角平台水印**不属于游戏本体**，复刻时忽略。
 - 素材仅作学习与 UX/动效参考；商用请自备美术与音效授权。

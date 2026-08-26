@@ -8,7 +8,7 @@ import type {
   RuleFrame,
   Side,
 } from '../types/xiangqi'
-import { chooseAiMove } from '../ai/search'
+import { chooseComputerMove } from '../computer/search'
 import { GameTimeline } from '../game/timeline'
 import {
   advanceRuleState,
@@ -466,7 +466,7 @@ describe('三次同形与循环责任', () => {
     })
   })
 
-  it('AI 不选择会立即令己方因长捉判负的第三次同形着', () => {
+  it('电脑对手不选择会立即令己方因长捉判负的第三次同形着', () => {
     const state = fromFen('4k3c/9/4bn2n/8c/6R2/6P2/9/9/9/3K5 w')
     const beforeFinal = play(state, [
       'g5i5',
@@ -484,7 +484,7 @@ describe('三次同形与循环责任', () => {
     })
 
     for (const seed of [0, 1, 2, 3, 7, 11]) {
-      const selected = chooseAiMove(beforeFinal, {
+      const selected = chooseComputerMove(beforeFinal, {
         difficulty: 'easy',
         seed,
       }).move
@@ -497,7 +497,7 @@ describe('三次同形与循环责任', () => {
     }
 
     for (const difficulty of ['normal', 'hard'] as const) {
-      const selected = chooseAiMove(beforeFinal, { difficulty }).move
+      const selected = chooseComputerMove(beforeFinal, { difficulty }).move
       expect(selected).not.toBeNull()
       expect(selected).not.toMatchObject({
         pieceId: losingMove.pieceId,

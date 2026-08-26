@@ -436,14 +436,14 @@ export function applyMove(state: GameState, requestedMove: Move): GameState {
 }
 
 export interface ApplyKnownLegalMoveOptions {
-  /** AI 叶节点只在即将第三次同形时支付长捉分析成本。 */
+  /** 电脑搜索叶节点只在即将第三次同形时支付长捉分析成本。 */
   chaseAnalysis?: 'always' | 'if-repeated' | 'if-third'
   /** 搜索评分本身会探测无合法着；无规则终局时可延后该遍历。 */
   deferBoardTerminal?: boolean
 }
 
 /**
- * 执行已经由 generateLegalMoves 产生的规范着法。AI 可复用该转换，避免
+ * 执行已经由 generateLegalMoves 产生的规范着法。电脑搜索可复用该转换，避免
  * 搜索层自行拼装不完整 GameState；外部玩家输入仍应使用 applyMove。
  */
 export function applyKnownLegalMove(

@@ -23,9 +23,9 @@ function makeContext(
     replayPlaying: false,
     timeline: { isReviewing: false, cursorPly: 0, livePly: 0 },
     matchMode: 'local',
-    aiTurn: false,
+    computerTurn: false,
     historyOpen: false,
-    ai: { phase: 'idle', error: null },
+    computer: { phase: 'idle', error: null },
     ...overrides,
   }
 }
@@ -268,32 +268,32 @@ describe('deriveGamePrompt', () => {
     })
   })
 
-  it('覆盖 AI 错误、棋谱暂停、思考与等待落子的状态', () => {
+  it('覆盖电脑对手错误、棋谱暂停、思考与等待落子的状态', () => {
     expect(
       deriveGamePrompt(
         makeContext({
-          aiTurn: true,
-          ai: { phase: 'error', error: 'worker crashed' },
+          computerTurn: true,
+          computer: { phase: 'error', error: 'worker crashed' },
         }),
       ),
     ).toMatchObject({
-      code: 'ai-error',
-      title: 'AI 未能完成落子',
+      code: 'computer-error',
+      title: '电脑未能完成落子',
       secondary: 'worker crashed',
     })
 
     expect(
       deriveGamePrompt(
-        makeContext({ aiTurn: true, historyOpen: true }),
+        makeContext({ computerTurn: true, historyOpen: true }),
       ).code,
-    ).toBe('ai-paused-history')
+    ).toBe('computer-paused-history')
     expect(
       deriveGamePrompt(
-        makeContext({ aiTurn: true, ai: { phase: 'thinking' } }),
+        makeContext({ computerTurn: true, computer: { phase: 'thinking' } }),
       ).code,
-    ).toBe('ai-thinking')
-    expect(deriveGamePrompt(makeContext({ aiTurn: true })).code).toBe(
-      'ai-turn',
+    ).toBe('computer-thinking')
+    expect(deriveGamePrompt(makeContext({ computerTurn: true })).code).toBe(
+      'computer-turn',
     )
   })
 
@@ -317,18 +317,18 @@ describe('deriveGamePrompt', () => {
     })
   })
 
-  it('AI 被将时显示正在应将，而不是普通思考', () => {
+  it('电脑对手被将时显示正在应将，而不是普通思考', () => {
     expect(
       deriveGamePrompt(
         makeContext({
           state: stateWith({ inCheck: true, sideToMove: 'black' }),
-          aiTurn: true,
-          ai: { phase: 'thinking' },
+          computerTurn: true,
+          computer: { phase: 'thinking' },
         }),
       ),
     ).toMatchObject({
       code: 'must-answer-check',
-      title: '黑方 AI 正在应将',
+      title: '黑方电脑正在应将',
     })
   })
 
@@ -452,7 +452,7 @@ describe('deriveGamePrompt', () => {
     ['kings-facing', '这步会造成将帅照面', undefined],
     ['terminal', '对局已经结束', '可悔棋或重开新局'],
     ['locked-animation', '走子演出进行中', '请稍候'],
-    ['locked-ai', '轮到黑方 AI', '请稍候'],
+    ['locked-computer', '轮到黑方电脑', '请稍候'],
     ['locked-replay', '棋谱回放为只读', '返回当前局面后才能行棋'],
     ['locked-settings', '请先完成或关闭对局设置', undefined],
   ] as const)(
@@ -487,7 +487,7 @@ describe('deriveGamePrompt', () => {
   })
 
   it('无选择时区分人机玩家回合和本地双人回合', () => {
-    expect(deriveGamePrompt(makeContext({ matchMode: 'ai' }))).toMatchObject({
+    expect(deriveGamePrompt(makeContext({ matchMode: 'computer' }))).toMatchObject({
       code: 'turn-human',
       title: '轮到你（红方）',
     })

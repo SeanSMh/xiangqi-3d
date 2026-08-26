@@ -2,17 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { createInitialState } from '../engine/board'
 import { applyMove, generateAllLegalMoves } from '../engine/moves'
 import type { GameState, Move, Piece, PieceKind, Side } from '../types/xiangqi'
-import { AI_MATE_SCORE, chooseAiMove } from './search'
-import type { AiDifficulty } from './types'
+import { COMPUTER_MATE_SCORE, chooseComputerMove } from './search'
+import type { ComputerDifficulty } from './types'
 
-describe('chooseAiMove', () => {
+describe('chooseComputerMove', () => {
   it('三个难度都返回确定、可由权威引擎执行的合法着', () => {
     const state = createInitialState()
     const legalKeys = new Set(generateAllLegalMoves(state).map(moveKey))
 
-    for (const difficulty of ['easy', 'normal', 'hard'] as AiDifficulty[]) {
-      const first = chooseAiMove(state, { difficulty, seed: 7 })
-      const second = chooseAiMove(
+    for (const difficulty of ['easy', 'normal', 'hard'] as ComputerDifficulty[]) {
+      const first = chooseComputerMove(state, { difficulty, seed: 7 })
+      const second = chooseComputerMove(
         { ...state, pieces: [...state.pieces].reverse() },
         { difficulty, seed: 7 },
       )
@@ -33,8 +33,8 @@ describe('chooseAiMove', () => {
       ],
       'red',
     )
-    for (const difficulty of ['normal', 'hard'] as AiDifficulty[]) {
-      expect(chooseAiMove(state, { difficulty, seed: 1 }).move).toMatchObject({
+    for (const difficulty of ['normal', 'hard'] as ComputerDifficulty[]) {
+      expect(chooseComputerMove(state, { difficulty, seed: 1 }).move).toMatchObject({
         pieceId: 'rr',
         capturedId: 'bc',
         to: { file: 0, rank: 3 },
@@ -44,12 +44,12 @@ describe('chooseAiMove', () => {
 
   it('三个难度都选择一步绝杀', () => {
     const state = mateFixture()
-    for (const difficulty of ['easy', 'normal', 'hard'] as AiDifficulty[]) {
-      const result = chooseAiMove(state, { difficulty, seed: 11 })
+    for (const difficulty of ['easy', 'normal', 'hard'] as ComputerDifficulty[]) {
+      const result = chooseComputerMove(state, { difficulty, seed: 11 })
       expect(result.move).not.toBeNull()
       const next = applyMove(state, result.move!)
       expect(next).toMatchObject({ status: 'checkmate', winner: 'red' })
-      expect(result.score).toBeGreaterThanOrEqual(AI_MATE_SCORE - 8)
+      expect(result.score).toBeGreaterThanOrEqual(COMPUTER_MATE_SCORE - 8)
     }
   })
 
@@ -66,8 +66,8 @@ describe('chooseAiMove', () => {
     )
     state.inCheck = true
     expect(generateAllLegalMoves(state)).toHaveLength(1)
-    for (const difficulty of ['easy', 'normal', 'hard'] as AiDifficulty[]) {
-      expect(chooseAiMove(state, { difficulty }).move).toMatchObject({
+    for (const difficulty of ['easy', 'normal', 'hard'] as ComputerDifficulty[]) {
+      expect(chooseComputerMove(state, { difficulty }).move).toMatchObject({
         pieceId: 'bk',
         from: { file: 4, rank: 9 },
         to: { file: 5, rank: 9 },
@@ -78,7 +78,7 @@ describe('chooseAiMove', () => {
   it('挑战难度使用固定两层预算且不会修改输入局面', () => {
     const state = createInitialState()
     const before = structuredClone(state)
-    const result = chooseAiMove(state, { difficulty: 'hard', maxNodes: 8_000 })
+    const result = chooseComputerMove(state, { difficulty: 'hard', maxNodes: 8_000 })
     expect(result.completedDepth).toBe(2)
     expect(result.nodes).toBeGreaterThan(44)
     expect(result.nodes).toBeLessThanOrEqual(8_000)
@@ -88,8 +88,8 @@ describe('chooseAiMove', () => {
 
   it('挑战难度预算不足时整轮回退到完整一层结果', () => {
     const state = createInitialState()
-    const shallow = chooseAiMove(state, { difficulty: 'normal' })
-    const limited = chooseAiMove(state, {
+    const shallow = chooseComputerMove(state, { difficulty: 'normal' })
+    const limited = chooseComputerMove(state, {
       difficulty: 'hard',
       maxNodes: 50,
     })
@@ -109,8 +109,8 @@ describe('chooseAiMove', () => {
       ],
       'red',
     )
-    const normal = chooseAiMove(state, { difficulty: 'normal' })
-    const hard = chooseAiMove(state, { difficulty: 'hard' })
+    const normal = chooseComputerMove(state, { difficulty: 'normal' })
+    const hard = chooseComputerMove(state, { difficulty: 'hard' })
 
     expect(normal.move).toMatchObject({
       pieceId: 'rr',
@@ -158,7 +158,7 @@ describe('chooseAiMove', () => {
       from: { file: 4, rank: 7 },
       to: { file: 4, rank: 8 },
     })
-    expect(chooseAiMove(terminal, { difficulty: 'hard' })).toMatchObject({
+    expect(chooseComputerMove(terminal, { difficulty: 'hard' })).toMatchObject({
       move: null,
       nodes: 0,
       completedDepth: 0,
@@ -174,7 +174,7 @@ describe('chooseAiMove', () => {
         offender: null,
       },
     }
-    expect(chooseAiMove(draw, { difficulty: 'hard' })).toMatchObject({
+    expect(chooseComputerMove(draw, { difficulty: 'hard' })).toMatchObject({
       move: null,
       score: 0,
       nodes: 0,
@@ -191,9 +191,9 @@ describe('chooseAiMove', () => {
       ],
       'black',
     )
-    expect(chooseAiMove(stalemate, { difficulty: 'normal' })).toMatchObject({
+    expect(chooseComputerMove(stalemate, { difficulty: 'normal' })).toMatchObject({
       move: null,
-      score: -AI_MATE_SCORE,
+      score: -COMPUTER_MATE_SCORE,
       nodes: 0,
     })
   })

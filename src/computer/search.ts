@@ -13,14 +13,14 @@ import type {
   Side,
 } from '../types/xiangqi'
 import type {
-  AiDifficulty,
-  AiSearchOptions,
-  AiSearchResult,
+  ComputerDifficulty,
+  ComputerSearchOptions,
+  ComputerSearchResult,
 } from './types'
 
-export const AI_MATE_SCORE = 1_000_000
+export const COMPUTER_MATE_SCORE = 1_000_000
 
-const DEFAULT_NODE_BUDGET: Record<AiDifficulty, number> = {
+const DEFAULT_NODE_BUDGET: Record<ComputerDifficulty, number> = {
   easy: 500,
   normal: 2_000,
   hard: 8_000,
@@ -59,10 +59,10 @@ interface RootCandidate {
  * 为当前行棋方选择一步棋。搜索节点只使用轻量局面转换，最终落子仍需
  * 由 GameController / applyMove 再次权威校验。
  */
-export function chooseAiMove(
+export function chooseComputerMove(
   state: GameState,
-  options: AiSearchOptions,
-): AiSearchResult {
+  options: ComputerSearchOptions,
+): ComputerSearchResult {
   const rootSide = state.sideToMove
   if (state.status !== 'playing') {
     return emptyResult(terminalScore(state.winner, rootSide, 0))
@@ -70,7 +70,7 @@ export function chooseAiMove(
 
   const legalMoves = orderMoves(state, generateAllLegalMoves(state))
   if (legalMoves.length === 0) {
-    return emptyResult(-AI_MATE_SCORE)
+    return emptyResult(-COMPUTER_MATE_SCORE)
   }
 
   const requestedMaxNodes = options.maxNodes
@@ -125,7 +125,7 @@ export function chooseAiMove(
       ? selectEasyCandidate(candidates, state, options.seed)
       : candidates[0]
 
-  if (!selected) return emptyResult(-AI_MATE_SCORE)
+  if (!selected) return emptyResult(-COMPUTER_MATE_SCORE)
   return {
     move: cloneMove(selected.move),
     score: selected.score,
@@ -139,7 +139,7 @@ function scoreShallowCandidate(
   state: GameState,
   move: Move,
   context: SearchContext,
-  difficulty: Exclude<AiDifficulty, 'hard'>,
+  difficulty: Exclude<ComputerDifficulty, 'hard'>,
 ): Candidate {
   if (state.status !== 'playing') {
     return {
@@ -308,10 +308,10 @@ function selectEasyCandidate(
   state: GameState,
   explicitSeed: number | undefined,
 ): Candidate | undefined {
-  const mate = candidates.find((candidate) => candidate.score >= AI_MATE_SCORE - 8)
+  const mate = candidates.find((candidate) => candidate.score >= COMPUTER_MATE_SCORE - 8)
   if (mate) return mate
   const nonLosing = candidates.filter(
-    (candidate) => candidate.score > -AI_MATE_SCORE + 8,
+    (candidate) => candidate.score > -COMPUTER_MATE_SCORE + 8,
   )
   const source = nonLosing.length > 0 ? nonLosing : candidates
   const pool = source.slice(0, Math.min(4, source.length))
@@ -326,10 +326,10 @@ function compareCandidates(left: Candidate, right: Candidate): number {
 
 function terminalScore(winner: Side | null, rootSide: Side, ply: number): number {
   if (!winner) return 0
-  return winner === rootSide ? AI_MATE_SCORE - ply : -AI_MATE_SCORE + ply
+  return winner === rootSide ? COMPUTER_MATE_SCORE - ply : -COMPUTER_MATE_SCORE + ply
 }
 
-function emptyResult(score: number): AiSearchResult {
+function emptyResult(score: number): ComputerSearchResult {
   return {
     move: null,
     score,

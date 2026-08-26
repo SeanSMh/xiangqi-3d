@@ -2,9 +2,10 @@
   "name": "xiangqi-3d",
   "displayName": "中国象棋 3D · Xiangqi Battle",
   "version": "0.1.0",
+  "author": "Bril",
   "type": "web-game",
   "stack": ["typescript", "vite", "three.js"],
-  "root": "/Users/bril/projects/xiangqi-3d",
+  "root": ".",
   "resources": {
     "reference": "resources/reference",
     "runtimePublic": "public"
@@ -20,6 +21,5 @@
   "docs": {
     "visualSpec": "resources/reference/docs/VISUAL_SPEC.md",
     "remakePlan": "resources/reference/docs/XIANGQI_REMAKE_PLAN.md"
-  },
-  "inspiration": "https://x.com/cellinlab/status/2084507607713116460"
+  }
 }

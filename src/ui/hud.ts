@@ -1,8 +1,8 @@
 import { pieceLabel } from '../engine/board'
-import type { AiRuntimeSnapshot } from '../game/aiCoordinator'
+import type { ComputerRuntimeSnapshot } from '../game/computerCoordinator'
 import type { MoveLogEntry } from '../game/controller'
 import {
-  isAiTurn,
+  isComputerTurn,
   matchModeLabel,
   type MatchConfig,
 } from '../game/match'
@@ -42,7 +42,7 @@ interface HudViewState {
   timeline: TimelineSnapshot
   moveLog: readonly MoveLogEntry[]
   matchConfig: MatchConfig
-  ai: AiRuntimeSnapshot
+  computer: ComputerRuntimeSnapshot
   prompt: GamePrompt
 }
 
@@ -100,7 +100,7 @@ export class Hud {
   private settingsDialog: HTMLDialogElement
   private ruleHelpDialog: HTMLDialogElement
   private modeLocalRadio: HTMLInputElement
-  private modeAiRadio: HTMLInputElement
+  private modeComputerRadio: HTMLInputElement
   private difficultyFieldset: HTMLFieldSetElement
   private difficultyRadios: Record<MatchConfig['difficulty'], HTMLInputElement>
   private historyPanel: HTMLElement
@@ -256,7 +256,7 @@ export class Hud {
     this.settingsDialog.setAttribute('aria-labelledby', 'settings-heading')
     this.settingsDialog.setAttribute(
       'aria-describedby',
-      'settings-description settings-ai-note',
+      'settings-description settings-computer-note',
     )
     const settingsHeader = document.createElement('div')
     settingsHeader.className = 'settings-header'
@@ -280,19 +280,19 @@ export class Hud {
     modeFieldset.className = 'settings-fieldset'
     modeFieldset.appendChild(makeLegend('对局模式'))
     this.modeLocalRadio = makeRadio('mode-local-radio', 'match-mode', 'local')
-    this.modeAiRadio = makeRadio('mode-ai-radio', 'match-mode', 'ai')
+    this.modeComputerRadio = makeRadio('mode-computer-radio', 'match-mode', 'computer')
     modeFieldset.append(
       makeRadioCard(this.modeLocalRadio, '本地双人', '红黑双方在同一设备操作'),
-      makeRadioCard(this.modeAiRadio, '人机对弈', '你执红先行，AI 执黑'),
+      makeRadioCard(this.modeComputerRadio, '人机对弈', '你执红先行，电脑执黑'),
     )
 
     this.difficultyFieldset = document.createElement('fieldset')
     this.difficultyFieldset.className = 'settings-fieldset'
-    this.difficultyFieldset.appendChild(makeLegend('AI 难度（仅人机）'))
+    this.difficultyFieldset.appendChild(makeLegend('电脑难度（仅人机）'))
     this.difficultyRadios = {
-      easy: makeRadio('difficulty-easy-radio', 'ai-difficulty', 'easy'),
-      normal: makeRadio('difficulty-normal-radio', 'ai-difficulty', 'normal'),
-      hard: makeRadio('difficulty-hard-radio', 'ai-difficulty', 'hard'),
+      easy: makeRadio('difficulty-easy-radio', 'computer-difficulty', 'easy'),
+      normal: makeRadio('difficulty-normal-radio', 'computer-difficulty', 'normal'),
+      hard: makeRadio('difficulty-hard-radio', 'computer-difficulty', 'hard'),
     }
     this.difficultyFieldset.append(
       makeRadioCard(this.difficultyRadios.easy, '入门', '会观察局面，也会留下机会'),
@@ -301,9 +301,9 @@ export class Hud {
     )
 
     const settingsNote = document.createElement('p')
-    settingsNote.id = 'settings-ai-note'
+    settingsNote.id = 'settings-computer-note'
     settingsNote.className = 'settings-note'
-    settingsNote.textContent = '首版人机模式固定玩家执红、AI 执黑。'
+    settingsNote.textContent = '人机模式固定玩家执红、电脑执黑。作品：Bril。'
     const settingsFooter = document.createElement('div')
     settingsFooter.className = 'settings-actions'
     const settingsCancelButton = makeButton(
@@ -329,7 +329,7 @@ export class Hud {
     this.modeLocalRadio.addEventListener('change', () =>
       this.syncDifficultyAvailability(),
     )
-    this.modeAiRadio.addEventListener('change', () =>
+    this.modeComputerRadio.addEventListener('change', () =>
       this.syncDifficultyAvailability(),
     )
     this.settingsDialog.addEventListener('cancel', (event) => {
@@ -565,7 +565,7 @@ export class Hud {
     this.gameModeButton.setAttribute('aria-expanded', String(open))
     if (open) {
       this.modeLocalRadio.checked = config.mode === 'local'
-      this.modeAiRadio.checked = config.mode === 'ai'
+      this.modeComputerRadio.checked = config.mode === 'computer'
       this.difficultyRadios[config.difficulty].checked = true
       this.syncDifficultyAvailability()
       this.settingsDialog.showModal()
@@ -620,18 +620,18 @@ export class Hud {
       timeline,
       moveLog,
       matchConfig,
-      ai,
+      computer,
       prompt,
     } = view
-    const aiTurn = isAiTurn(matchConfig, state)
+    const computerTurn = isComputerTurn(matchConfig, state)
     const sideLabel = state.sideToMove === 'red' ? '红方' : '黑方'
     const sideColor = state.sideToMove === 'red' ? '#ff665c' : '#80bfff'
     this.turnLabelEl.textContent = timeline.isReviewing
       ? `回放 ${timeline.cursorPly} / ${timeline.livePly} · ${sideLabel}`
       : state.status !== 'playing'
         ? `第 ${timeline.livePly} 手 · 对局结束`
-        : aiTurn
-          ? `第 ${timeline.livePly + 1} 手 · 黑方 AI 行棋`
+        : computerTurn
+          ? `第 ${timeline.livePly + 1} 手 · 黑方电脑行棋`
           : `第 ${timeline.livePly + 1} 手 · ${sideLabel}行棋`
     this.turnLabelEl.style.color = sideColor
     this.turnLabelEl.style.fontWeight = '700'
@@ -642,7 +642,7 @@ export class Hud {
 
     this.gameStatusEl.dataset.tone = prompt.tone
     this.gameStatusEl.dataset.promptCode = prompt.code
-    this.gameStatusEl.classList.toggle('is-ai-thinking', prompt.code === 'ai-thinking')
+    this.gameStatusEl.classList.toggle('is-computer-thinking', prompt.code === 'computer-thinking')
     if (this.gameStatusVisibleEl.textContent !== prompt.title) {
       this.gameStatusVisibleEl.textContent = prompt.title
     }
@@ -673,7 +673,7 @@ export class Hud {
       animationBusy ||
       replayPlaying ||
       timeline.isReviewing ||
-      ai.phase === 'thinking'
+      computer.phase === 'thinking'
     this.ruleHelpButton.disabled = this.gameModeButton.disabled
     this.undoButton.disabled = this.demoRunning || !timeline.canUndo
     this.historyToggleButton.disabled = this.demoRunning
@@ -699,7 +699,7 @@ export class Hud {
     this.renderMoveLog(
       moveLog,
       timeline,
-      animationBusy || replayPlaying || ai.phase === 'thinking',
+      animationBusy || replayPlaying || computer.phase === 'thinking',
       matchConfig,
     )
   }
@@ -729,7 +729,7 @@ export class Hud {
     )
     for (const entry of entries) {
       const actor =
-        matchConfig.mode === 'ai' && entry.side === 'black' ? 'AI · ' : ''
+        matchConfig.mode === 'computer' && entry.side === 'black' ? '电脑 · ' : ''
       rows.push(
         makeHistoryRow(
           entry.ply,
@@ -762,13 +762,13 @@ export class Hud {
       >
     ).find(([, radio]) => radio.checked)?.[0]
     return {
-      mode: this.modeAiRadio.checked ? 'ai' : 'local',
+      mode: this.modeComputerRadio.checked ? 'computer' : 'local',
       difficulty: difficulty ?? 'normal',
     }
   }
 
   private syncDifficultyAvailability(): void {
-    this.difficultyFieldset.disabled = !this.modeAiRadio.checked
+    this.difficultyFieldset.disabled = !this.modeComputerRadio.checked
   }
 
   private renderSpoils(

@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { createInitialState } from '../engine/board'
 import type {
-  AiSearchResult,
-  AiWorkerRequest,
-  AiWorkerResponse,
-} from '../ai/types'
+  ComputerSearchResult,
+  ComputerWorkerRequest,
+  ComputerWorkerResponse,
+} from '../computer/types'
 import {
-  AI_THINK_DELAY_MS,
-  AiCoordinator,
-  type AiWorkerLike,
-} from './aiCoordinator'
+  COMPUTER_THINK_DELAY_MS,
+  ComputerCoordinator,
+  type ComputerWorkerLike,
+} from './computerCoordinator'
 
-describe('AiCoordinator', () => {
+describe('ComputerCoordinator', () => {
   it('同时等待 Worker 结果与确定性最短思考时间', () => {
     const workers: FakeWorker[] = []
-    const coordinator = new AiCoordinator(() => {
+    const coordinator = new ComputerCoordinator(() => {
       const worker = new FakeWorker()
       workers.push(worker)
       return worker
@@ -29,13 +29,13 @@ describe('AiCoordinator', () => {
     })
 
     worker.emitResult(decision(worker.posted!))
-    expect(coordinator.advance(AI_THINK_DELAY_MS.normal - 1, 7)).toBeNull()
+    expect(coordinator.advance(COMPUTER_THINK_DELAY_MS.normal - 1, 7)).toBeNull()
     expect(coordinator.advance(1, 7)).toEqual(decision(worker.posted!).result)
   })
 
   it('revision 改变会终止请求并忽略同 ply 的陈旧结果', () => {
     const workers: FakeWorker[] = []
-    const coordinator = new AiCoordinator(() => {
+    const coordinator = new ComputerCoordinator(() => {
       const worker = new FakeWorker()
       workers.push(worker)
       return worker
@@ -54,7 +54,7 @@ describe('AiCoordinator', () => {
 
   it('提交、动画完成、取消和 Worker 错误都有明确状态', () => {
     const worker = new FakeWorker()
-    const coordinator = new AiCoordinator(() => worker)
+    const coordinator = new ComputerCoordinator(() => worker)
     coordinator.begin(createInitialState(), 'easy', 1)
     const result = decision(worker.posted!).result
     coordinator.markCommitted(result)
@@ -82,7 +82,7 @@ describe('AiCoordinator', () => {
   it('Worker 首次无法创建时进入错误态，取消后可重新创建并恢复', () => {
     const worker = new FakeWorker()
     let attempts = 0
-    const coordinator = new AiCoordinator(() => {
+    const coordinator = new ComputerCoordinator(() => {
       attempts += 1
       if (attempts === 1) throw new Error('worker unavailable')
       return worker
@@ -104,20 +104,20 @@ describe('AiCoordinator', () => {
       error: null,
     })
     worker.emitResult(decision(worker.posted!))
-    const recovered = coordinator.advance(AI_THINK_DELAY_MS.normal, 2)
+    const recovered = coordinator.advance(COMPUTER_THINK_DELAY_MS.normal, 2)
     expect(recovered).toEqual(decision(worker.posted!).result)
     coordinator.markCommitted(recovered!)
     expect(coordinator.getSnapshot('normal').phase).toBe('animating')
   })
 })
 
-class FakeWorker implements AiWorkerLike {
-  onmessage: ((event: MessageEvent<AiWorkerResponse>) => void) | null = null
+class FakeWorker implements ComputerWorkerLike {
+  onmessage: ((event: MessageEvent<ComputerWorkerResponse>) => void) | null = null
   onerror: ((event: ErrorEvent) => void) | null = null
-  posted: AiWorkerRequest | null = null
+  posted: ComputerWorkerRequest | null = null
   terminated = false
 
-  postMessage(message: AiWorkerRequest): void {
+  postMessage(message: ComputerWorkerRequest): void {
     this.posted = message
   }
 
@@ -125,8 +125,8 @@ class FakeWorker implements AiWorkerLike {
     this.terminated = true
   }
 
-  emitResult(response: AiWorkerResponse): void {
-    this.onmessage?.({ data: response } as MessageEvent<AiWorkerResponse>)
+  emitResult(response: ComputerWorkerResponse): void {
+    this.onmessage?.({ data: response } as MessageEvent<ComputerWorkerResponse>)
   }
 
   emitError(message: string): void {
@@ -134,8 +134,8 @@ class FakeWorker implements AiWorkerLike {
   }
 }
 
-function decision(request: AiWorkerRequest): Extract<AiWorkerResponse, { type: 'result' }> {
-  const result: AiSearchResult = {
+function decision(request: ComputerWorkerRequest): Extract<ComputerWorkerResponse, { type: 'result' }> {
+  const result: ComputerSearchResult = {
     move: {
       pieceId: 'p12',
       from: { file: 0, rank: 3 },

@@ -1,12 +1,12 @@
-import { chooseAiMove } from './search'
-import type { AiWorkerRequest, AiWorkerResponse } from './types'
+import { chooseComputerMove } from './search'
+import type { ComputerWorkerRequest, ComputerWorkerResponse } from './types'
 
 interface WorkerScope {
   addEventListener(
     type: 'message',
-    listener: (event: MessageEvent<AiWorkerRequest>) => void,
+    listener: (event: MessageEvent<ComputerWorkerRequest>) => void,
   ): void
-  postMessage(message: AiWorkerResponse): void
+  postMessage(message: ComputerWorkerResponse): void
 }
 
 const workerScope = self as unknown as WorkerScope
@@ -19,7 +19,7 @@ workerScope.addEventListener('message', (event) => {
       type: 'result',
       requestId: request.requestId,
       timelineRevision: request.timelineRevision,
-      result: chooseAiMove(request.state, request.options),
+      result: chooseComputerMove(request.state, request.options),
     })
   } catch (error) {
     workerScope.postMessage({

@@ -249,7 +249,7 @@
   color: #ffd45a;
 }
 
-#game-status.is-ai-thinking::before {
+#game-status.is-computer-thinking::before {
   display: inline-block;
   width: 8px;
   height: 8px;
@@ -258,7 +258,7 @@
   border-top-color: #ffe082;
   border-radius: 50%;
   content: '';
-  animation: ai-thinking-spin 0.9s linear infinite;
+  animation: computer-thinking-spin 0.9s linear infinite;
 }
 
 .xq-controls {
@@ -1133,7 +1133,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .spoils-badge,
-  #game-status.is-ai-thinking::before,
+  #game-status.is-computer-thinking::before,
   #game-settings-dialog[open],
   #rule-help-dialog[open] {
     animation: none;
@@ -1147,7 +1147,7 @@
   }
 }
 
-@keyframes ai-thinking-spin {
+@keyframes computer-thinking-spin {
   to {
     transform: rotate(360deg);
   }

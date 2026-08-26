@@ -168,7 +168,7 @@ export async function runDemoReel(
     return {
       completed: false,
       durationMs: 0,
-      reason: '请先按 M 切换到「本地双人」，人机模式下 AI 会和演示抢着走棋',
+      reason: '请先按 M 切换到「本地双人」，人机模式下电脑对手会和演示抢着走棋',
     }
   }
   if (initial.manualClock) {

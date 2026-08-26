@@ -1,28 +1,28 @@
 import type {
-  AiDifficulty,
-  AiSearchResult,
-  AiWorkerRequest,
-  AiWorkerResponse,
-} from '../ai/types'
+  ComputerDifficulty,
+  ComputerSearchResult,
+  ComputerWorkerRequest,
+  ComputerWorkerResponse,
+} from '../computer/types'
 import type { GameState, Move } from '../types/xiangqi'
 
-export type AiPhase = 'idle' | 'thinking' | 'animating' | 'error'
+export type ComputerPhase = 'idle' | 'thinking' | 'animating' | 'error'
 
-export const AI_THINK_DELAY_MS: Record<AiDifficulty, number> = {
+export const COMPUTER_THINK_DELAY_MS: Record<ComputerDifficulty, number> = {
   easy: 420,
   normal: 650,
   hard: 900,
 }
 
-export interface AiDecisionSummary {
+export interface ComputerDecisionSummary {
   move: Move
   score: number
   completedDepth: number
   nodes: number
 }
 
-export interface AiRuntimeSnapshot {
-  phase: AiPhase
+export interface ComputerRuntimeSnapshot {
+  phase: ComputerPhase
   pending: boolean
   requestId: number | null
   timelineRevision: number | null
@@ -30,39 +30,39 @@ export interface AiRuntimeSnapshot {
   minimumThinkMs: number
   resultReady: boolean
   error: string | null
-  lastDecision: AiDecisionSummary | null
+  lastDecision: ComputerDecisionSummary | null
 }
 
-export interface AiWorkerLike {
-  onmessage: ((event: MessageEvent<AiWorkerResponse>) => void) | null
+export interface ComputerWorkerLike {
+  onmessage: ((event: MessageEvent<ComputerWorkerResponse>) => void) | null
   onerror: ((event: ErrorEvent) => void) | null
-  postMessage(message: AiWorkerRequest): void
+  postMessage(message: ComputerWorkerRequest): void
   terminate(): void
 }
 
-export type AiWorkerFactory = () => AiWorkerLike
+export type ComputerWorkerFactory = () => ComputerWorkerLike
 
 interface ActiveRequest {
   requestId: number
   timelineRevision: number
-  difficulty: AiDifficulty
+  difficulty: ComputerDifficulty
 }
 
-/** 管理 Worker、最短思考演出与陈旧结果失效，不决定何时轮到 AI。 */
-export class AiCoordinator {
-  private readonly workerFactory: AiWorkerFactory
+/** 管理 Worker、最短思考演出与陈旧结果失效，不决定何时轮到电脑对手。 */
+export class ComputerCoordinator {
+  private readonly workerFactory: ComputerWorkerFactory
   private readonly onStateChange: () => void
-  private worker: AiWorkerLike | null = null
+  private worker: ComputerWorkerLike | null = null
   private activeRequest: ActiveRequest | null = null
   private nextRequestId = 0
-  private phase: AiPhase = 'idle'
+  private phase: ComputerPhase = 'idle'
   private elapsedMs = 0
-  private readyResult: AiSearchResult | null = null
+  private readyResult: ComputerSearchResult | null = null
   private error: string | null = null
-  private lastDecision: AiDecisionSummary | null = null
+  private lastDecision: ComputerDecisionSummary | null = null
 
   constructor(
-    workerFactory: AiWorkerFactory = createAiWorker,
+    workerFactory: ComputerWorkerFactory = createComputerWorker,
     onStateChange: () => void = () => undefined,
   ) {
     this.workerFactory = workerFactory
@@ -71,7 +71,7 @@ export class AiCoordinator {
 
   begin(
     state: GameState,
-    difficulty: AiDifficulty,
+    difficulty: ComputerDifficulty,
     timelineRevision: number,
   ): number {
     this.cancel()
@@ -88,7 +88,7 @@ export class AiCoordinator {
       worker.onmessage = (event) => this.handleMessage(event.data)
       worker.onerror = (event) => {
         event.preventDefault()
-        this.fail(event.message || 'AI Worker 运行失败')
+        this.fail(event.message || '电脑对手 Worker 运行失败')
       }
       worker.postMessage({
         type: 'search',
@@ -99,7 +99,7 @@ export class AiCoordinator {
       })
     } catch (error) {
       this.fail(
-        error instanceof Error ? error.message : '无法启动 AI Worker',
+        error instanceof Error ? error.message : '无法启动电脑对手 Worker',
       )
       return requestId
     }
@@ -107,7 +107,7 @@ export class AiCoordinator {
     return requestId
   }
 
-  advance(milliseconds: number, timelineRevision: number): AiSearchResult | null {
+  advance(milliseconds: number, timelineRevision: number): ComputerSearchResult | null {
     if (this.phase !== 'thinking' || !this.activeRequest) return null
     if (this.activeRequest.timelineRevision !== timelineRevision) {
       this.cancel()
@@ -116,7 +116,7 @@ export class AiCoordinator {
     if (Number.isFinite(milliseconds) && milliseconds > 0) {
       this.elapsedMs += milliseconds
     }
-    const minimumThinkMs = AI_THINK_DELAY_MS[this.activeRequest.difficulty]
+    const minimumThinkMs = COMPUTER_THINK_DELAY_MS[this.activeRequest.difficulty]
     if (!this.readyResult || this.elapsedMs < minimumThinkMs) return null
 
     const result = this.readyResult
@@ -124,9 +124,9 @@ export class AiCoordinator {
     return result
   }
 
-  markCommitted(result: AiSearchResult): void {
+  markCommitted(result: ComputerSearchResult): void {
     if (!result.move) {
-      this.fail('AI 没有返回可执行着法')
+      this.fail('电脑对手没有返回可执行着法')
       return
     }
     this.stopWorker()
@@ -168,7 +168,7 @@ export class AiCoordinator {
     if (clearLastDecision) this.lastDecision = null
   }
 
-  getSnapshot(difficulty: AiDifficulty): AiRuntimeSnapshot {
+  getSnapshot(difficulty: ComputerDifficulty): ComputerRuntimeSnapshot {
     return {
       phase: this.phase,
       pending: this.phase === 'thinking',
@@ -177,8 +177,8 @@ export class AiCoordinator {
       elapsedMs: this.elapsedMs,
       minimumThinkMs:
         this.activeRequest === null
-          ? AI_THINK_DELAY_MS[difficulty]
-          : AI_THINK_DELAY_MS[this.activeRequest.difficulty],
+          ? COMPUTER_THINK_DELAY_MS[difficulty]
+          : COMPUTER_THINK_DELAY_MS[this.activeRequest.difficulty],
       resultReady: this.readyResult !== null,
       error: this.error,
       lastDecision: this.lastDecision
@@ -190,7 +190,7 @@ export class AiCoordinator {
     }
   }
 
-  private handleMessage(response: AiWorkerResponse): void {
+  private handleMessage(response: ComputerWorkerResponse): void {
     const active = this.activeRequest
     if (
       !active ||
@@ -217,8 +217,8 @@ export class AiCoordinator {
   }
 }
 
-function createAiWorker(): AiWorkerLike {
-  return new Worker(new URL('../ai/ai.worker.ts', import.meta.url), {
+function createComputerWorker(): ComputerWorkerLike {
+  return new Worker(new URL('../computer/computer.worker.ts', import.meta.url), {
     type: 'module',
   })
 }

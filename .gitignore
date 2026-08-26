@@ -11,6 +11,7 @@ dist/
 .idea/
 *.log
 npm-debug.log*
+.playwright-cli/
 
 # 原视频和逐帧分析产物仅保留在本地，不进入代码仓库。
 resources/reference/00_source_video.mp4

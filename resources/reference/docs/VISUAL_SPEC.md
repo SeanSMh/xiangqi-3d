@@ -1,9 +1,9 @@
 # 3D Chess Battle — 画面与动效规格书（复刻参考）
 
-> 源：Alex Nguyen / Built with Rork  
+> 源：Alex Nguyen 发布的公开 X 视频
 > 原视频：`00_source_video.mp4`（1320×720，60fps，约 2:52）  
-> 本目录：`/Users/bril/projects/xiangqi-3d/resources/reference`  
-> 项目根：`/Users/bril/projects/xiangqi-3d`
+> 本目录：`resources/reference/`
+> 项目根：仓库根目录
 
 ---
 
@@ -143,7 +143,7 @@
 | 工具栏 | 右上 (980,0)–(1320,55) | 一排图标：书签/静音/旋转/设置等 | `ui_toolbar_topright.jpg` |
 | 战利品 | 右上 (1050,55)–(1315,200) | `SPOILS` + 优势方 + 分差 + 被吃子图标行 | `ui_spoils_panel.jpg` / `state_spoils_*.jpg` |
 | 坐标 | 棋盘底/侧 | A–H / 1–8 | `ui_board_coords_bottom.jpg` |
-| 水印 | 右下 | `Built with Rork`（复刻时删除） | `ui_watermark_rork.jpg` |
+| 平台水印 | 右下 | 仅存在于源视频，产品中不使用 | 源素材裁切（本地留存） |
 | 顶栏整段 | 全宽 | HUD 总览 | `ui_full_hud_top.jpg` |
 
 ### 5.1 SPOILS 面板逻辑
@@ -171,7 +171,7 @@
 ### 5.3 注意
 
 - 视频左下角录屏控件（红点计时）**不是游戏 UI**，勿复刻。
-- 右下 Rork 水印 **勿复刻**。
+- 右下平台水印 **勿复刻**。
 
 ---
 
@@ -214,7 +214,7 @@
 
 | 能力 | 原版 | 建议实现 |
 |------|------|----------|
-| 3D 渲染 | Web/App 3D（Rork） | Three.js / Unity / Godot |
+| 3D 渲染 | Web/App 3D | Three.js / Unity / Godot |
 | 规则 | 国际象棋 | 独立 `XiangqiEngine` |
 | 角色 | 定制 3D 人偶 | 低模 + 动画；MVP 可用棋子模型+字 |
 | VFX | 屏幕空间闪光 + 粒子 | 广告牌 sprite 序列 / GPU 粒子 |

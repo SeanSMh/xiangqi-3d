@@ -7,6 +7,10 @@
 
 从演示视频导出，用于对齐画面、UI、动效节奏。
 
+> **远端仓库说明：**约 1 GB 的源视频、逐帧序列和裁切素材仅在本地留存，已由
+> `.gitignore` 排除。远端克隆包含本说明、规格文档与预览页；预览页中的素材链接
+> 需要在本地补齐对应参考素材后才能打开。
+
 | 路径 | 说明 |
 |------|------|
 | `reference/00_source_video.mp4` | 源演示视频（约 2:52，1320×720，60fps） |
@@ -26,7 +30,7 @@
 ### 打开预览
 
 ```bash
-open /Users/bril/projects/xiangqi-3d/resources/reference/index.html
+npm run open:reference
 ```
 
 ### 体积提示
