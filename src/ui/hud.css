@@ -320,6 +320,34 @@
   cursor: not-allowed;
 }
 
+/*
+ * 演示进行中：按钮自己保持可点（那是唯一的停止入口），
+ * 用呼吸的红边把它和旁边被禁用的一排区分开。
+ */
+#demo-btn[aria-pressed='true'] {
+  border-color: rgba(255, 92, 92, 0.9);
+  background: rgba(74, 26, 26, 0.96);
+  color: #ffd9d9;
+  animation: xq-demo-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes xq-demo-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(255, 92, 92, 0.42);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(255, 92, 92, 0);
+  }
+}
+
+/* 系统要求减弱动效时只保留静态高亮，不做呼吸。 */
+@media (prefers-reduced-motion: reduce) {
+  #demo-btn[aria-pressed='true'] {
+    animation: none;
+  }
+}
+
 #game-settings-dialog,
 #rule-help-dialog {
   width: min(430px, calc(100vw - 32px));

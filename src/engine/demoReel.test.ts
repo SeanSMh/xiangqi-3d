@@ -4,15 +4,15 @@ import { applyMove } from './moves'
 import type { GameState, Move } from '../types/xiangqi'
 
 /**
- * 录屏脚本用的那条对局线必须始终合法。
+ * 演示片用的那条对局线必须始终合法。
  *
- * `scripts/demo_reel.js` 靠合成 PointerEvent 逐手点出这条线；只要有一手因为
- * 规则改动而失效，脚本会卡在中途——而这种事只有等到真去录片子时才会发现。
- * 因此把它接进测试，并且**直接读脚本源文件**取着法，而不是在这里抄一份：
+ * `src/demo/demoReel.ts` 靠合成 PointerEvent 逐手点出这条线；只要有一手因为
+ * 规则改动而失效，演示会卡在中途——而这种事只有等到真去录片子时才会发现。
+ * 因此把它接进测试，并且**直接读源文件**取着法，而不是在这里抄一份：
  * 抄一份就会漂移，漂移了这条测试反而变成噪音。
  */
 const DEMO_SOURCE = Object.values(
-  import.meta.glob('/scripts/demo_reel.js', {
+  import.meta.glob('/src/demo/demoReel.ts', {
     query: '?raw',
     import: 'default',
     eager: true,

@@ -72,6 +72,7 @@ const hud = new Hud(app, {
   onUndo: () => undoLastMove(),
   onToggleHistory: () => toggleHistory(),
   onToggleCinema: () => toggleCinemaMode(),
+  onToggleDemo: () => toggleDemoReel(),
   onSeekReplay: (ply) => seekReplay(ply),
   onReplayFirst: () => replayFirst(),
   onReplayPrevious: () => replayPrevious(),
@@ -236,6 +237,62 @@ function toggleCinemaMode(): void {
   hud.setCinemaMode(!hud.isCinemaMode)
   clearInteractionFeedback()
   syncUiAndMarkers()
+}
+
+/**
+ * 自动演示片：按既定着法走完一整局，同时环绕运镜，供录屏出片。
+ *
+ * 模块**按需动态加载**，因此在生产构建里是一个独立 chunk——不点就不下载，
+ * 正常对局一个字节都不多付。
+ *
+ * 它靠合成 PointerEvent 走真实输入通道，所以必须先把局面收拾干净：
+ * 回放中、设置弹窗开着、或处于人机模式时都不能开演。
+ */
+let demoAbort: AbortController | null = null
+
+function toggleDemoReel(): void {
+  if (demoAbort) {
+    demoAbort.abort()
+    return
+  }
+  if (hud.isMatchSettingsOpen || hud.isRuleHelpOpen) return
+  stopReplay()
+  aiCoordinator.cancel(true)
+  if (controller.getTimelineSnapshot().isReviewing) {
+    controller.returnToLive()
+    animations.cancelAndSnap(controller.getState())
+  }
+  hud.setHistoryOpen(false)
+  clearInteractionFeedback()
+
+  const abort = new AbortController()
+  demoAbort = abort
+  hud.setDemoRunning(true)
+  syncUiAndMarkers()
+
+  void (async () => {
+    try {
+      const { runDemoReel } = await import('./demo/demoReel')
+      const result = await runDemoReel({
+        signal: abort.signal,
+        onLog: (message) => console.info(`[演示] ${message}`),
+        commands: {
+          restart: () => restartGame(),
+          toggleCinema: () => toggleCinemaMode(),
+          toggleTacticalView: () => toggleTacticalView(),
+        },
+      })
+      if (!result.completed && result.reason) {
+        console.warn(`[演示] ${result.reason}`)
+      }
+    } catch (error) {
+      console.error('[演示] 未能加载演示模块', error)
+    } finally {
+      demoAbort = null
+      hud.setDemoRunning(false)
+      syncUiAndMarkers()
+    }
+  })()
 }
 
 function toggleRuleHelp(): void {
@@ -686,6 +743,14 @@ window.addEventListener('keydown', (event) => {
     return
   }
   if (isEditableTarget(event.target)) return
+  // 演示进行中只留两个出口：D 或 Esc 停止。其余按键会让局面和脚本对不上。
+  if (hud.isDemoRunning) {
+    if (key === 'd' || event.key === 'Escape') {
+      event.preventDefault()
+      toggleDemoReel()
+    }
+    return
+  }
   if (hud.isRuleHelpOpen) {
     if (event.key === '?' && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault()
@@ -736,6 +801,11 @@ window.addEventListener('keydown', (event) => {
   if (key === 'c') {
     event.preventDefault()
     toggleCinemaMode()
+    return
+  }
+  if (key === 'd') {
+    event.preventDefault()
+    toggleDemoReel()
     return
   }
   if (!hud.isHistoryOpen) return

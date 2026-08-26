@@ -26,6 +26,7 @@ interface HudActions {
   onUndo: () => void
   onToggleHistory: () => void
   onToggleCinema: () => void
+  onToggleDemo: () => void
   onSeekReplay: (ply: number) => void
   onReplayFirst: () => void
   onReplayPrevious: () => void
@@ -112,6 +113,8 @@ export class Hud {
   private replayNextButton: HTMLButtonElement
   private returnLiveButton: HTMLButtonElement
   private cinemaExitButton: HTMLButtonElement
+  private demoButton: HTMLButtonElement
+  private demoRunning = false
   private historyOpen = false
   private cinemaMode = false
   private readonly actions: HudActions
@@ -224,6 +227,10 @@ export class Hud {
     this.ruleHelpButton.setAttribute('aria-expanded', 'false')
     this.ruleHelpButton.setAttribute('aria-keyshortcuts', '?')
     this.ruleHelpButton.dataset.shortLabel = '规则'
+    this.demoButton = makeButton('demo-btn', '演示 D', actions.onToggleDemo)
+    this.demoButton.setAttribute('aria-keyshortcuts', 'D')
+    this.demoButton.setAttribute('aria-pressed', 'false')
+    this.demoButton.dataset.shortLabel = '演示'
     const restartButton = makeButton('restart-btn', '重开 R', actions.onRestart)
     restartButton.dataset.shortLabel = '重开'
     this.fullscreenButton = makeButton(
@@ -239,6 +246,7 @@ export class Hud {
       this.undoButton,
       this.historyToggleButton,
       this.ruleHelpButton,
+      this.demoButton,
       restartButton,
       this.fullscreenButton,
     )
@@ -503,6 +511,25 @@ export class Hud {
     return this.cinemaMode
   }
 
+  get isDemoRunning(): boolean {
+    return this.demoRunning
+  }
+
+  /**
+   * 演示进行中：按钮变成「停止」，其余入口一律禁用。
+   *
+   * 演示是靠合成事件按既定着法走完一整局的，用户中途悔一手或跳去看棋谱，
+   * 局面就和脚本对不上了——与其让它在半路报错，不如干脆点不动。
+   */
+  setDemoRunning(running: boolean): void {
+    if (this.demoRunning === running) return
+    this.demoRunning = running
+    this.rootEl.dataset.demo = String(running)
+    this.demoButton.textContent = running ? '停止 D' : '演示 D'
+    this.demoButton.dataset.shortLabel = running ? '停止' : '演示'
+    this.demoButton.setAttribute('aria-pressed', String(running))
+  }
+
   /**
    * 录制模式：收起全部面板，只留一个恢复入口。
    * 恢复按钮必须留着——不能让用户只能靠猜快捷键退出。
@@ -642,9 +669,14 @@ export class Hud {
 
     this.gameModeButton.textContent = `${matchModeLabel(matchConfig)} M`
     this.gameModeButton.disabled =
-      animationBusy || replayPlaying || timeline.isReviewing || ai.phase === 'thinking'
+      this.demoRunning ||
+      animationBusy ||
+      replayPlaying ||
+      timeline.isReviewing ||
+      ai.phase === 'thinking'
     this.ruleHelpButton.disabled = this.gameModeButton.disabled
-    this.undoButton.disabled = !timeline.canUndo
+    this.undoButton.disabled = this.demoRunning || !timeline.canUndo
+    this.historyToggleButton.disabled = this.demoRunning
     this.replayFirstButton.disabled =
       animationBusy || replayPlaying || timeline.cursorPly === timeline.firstAvailablePly
     this.replayPreviousButton.disabled =
