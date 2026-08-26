@@ -817,3 +817,14 @@ if (moves.some((record) => record.givesCheck)) return 'allowed'
   到修复版 `3.3.18` 后，`npm ci` 与完整 `npm audit` 均为 `0 vulnerabilities`。
 - 生产目录与资源库复扫无生成来源元数据；浏览器实测设置面板显示「作品：Bril」，
   人机模式可正常切换为 `computer` 状态，初始棋盘渲染正常，控制台 0 error / 0 warning。
+
+## 2026-08-26：Phase 22 — GitHub 公开发布与远端完整性复核
+
+- 项目发布到公开仓库 <https://github.com/SeanSMh/xiangqi-3d>，默认分支为 `main`；
+  仓库主页指向 <https://xq.prodpass.net/>。
+- 远端文件树共 795 项，未包含 `dist/`、source map、`.DS_Store`、旧模块路径，以及
+  约 1 GB 的本地参考视频、逐帧序列、裁切图和音频。
+- 从 GitHub 全新克隆后执行 `npm ci`，完整依赖审计为 0 漏洞；19 个测试文件、243 项
+  测试全过，`npm run typecheck` 与 `npm run build` 通过。
+- 生产构建只保留一个非阻断警告：主程序压缩后约 706 KB，超过 Vite 默认 500 KB
+  提示阈值；不影响当前正确性，后续可单独做 Three.js 代码拆分与首屏性能优化。
